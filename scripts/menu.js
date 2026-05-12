@@ -12,6 +12,7 @@
       this.toggle = qs('menuToggle');
       this.nav = qs('topnav');
       this.onRightViewSelect = options && typeof options.onRightViewSelect === 'function' ? options.onRightViewSelect : null;
+      this.onAction = options && typeof options.onAction === 'function' ? options.onAction : null;
     }
 
     init() {
@@ -30,6 +31,12 @@
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
         if (target.tagName !== 'A') return;
+
+        const action = target.dataset ? target.dataset.appAction : '';
+        if (action && this.onAction) {
+          event.preventDefault();
+          this.onAction(action);
+        }
 
         const view = target.dataset ? target.dataset.rightView : '';
         if (view && this.onRightViewSelect) {
@@ -185,6 +192,27 @@
       this.visibleColorsTimers.clear();
       this.visibleColorsTokens.clear();
       this.visibleColorsPromises.clear();
+    }
+
+    clearAllLayers() {
+      // Cancel scheduled work first.
+      this.cancelAllVisibleColorsSchedules();
+
+      if (this.pendingDraw) {
+        window.clearTimeout(this.pendingDraw);
+        this.pendingDraw = 0;
+      }
+
+      this.layers = [];
+      this.drawQueue = Promise.resolve();
+
+      const c = this.getContext();
+      if (!c) return;
+      this.resizeToCSSPixels();
+      const rect = c.canvas.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      c.ctx.clearRect(0, 0, w, h);
     }
 
     removeLayerAt(layerIndex) {
@@ -1355,6 +1383,88 @@
         if (!this.canvasLayers.hasLayers()) return;
         this.canvasLayers.redrawAllLayers();
       });
+    }
+
+    resetToStart() {
+      // Clear canvas + layers.
+      if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
+        this.canvasLayers.clearAllLayers();
+      }
+
+      // Reset interaction state.
+      this.isDrawing = false;
+      this.drawPointerId = null;
+      this.drawPath = [];
+      this.activeClipPathN = null;
+      this.activeClipKey = null;
+
+      this.isDraggingShape = false;
+      this.dragPointerId = null;
+      this.dragLayerIndex = -1;
+      this.dragStartPos = null;
+      this.dragStartClipPathN = null;
+      this.dragPendingPos = null;
+      if (this.dragRaf) {
+        window.cancelAnimationFrame(this.dragRaf);
+        this.dragRaf = 0;
+      }
+
+      this.isDraggingImage = false;
+      this.imagePointerId = null;
+      this.imageLayerIndex = -1;
+      this.imageDragMode = '';
+      this.imageStartPos = null;
+      this.imageStartPlacement = null;
+
+      this.toolMode = 'draw';
+      this.isCropping = false;
+      this.cropPointerId = null;
+      this.cropStartPos = null;
+      this.cropPendingPos = null;
+      this.cropRectPx = null;
+      this.cropRectN = null;
+
+      this.activeLayerIndex = -1;
+
+      // Reset controls to defaults.
+      this.setCurrentColor('#000000');
+
+      if (this.repeat instanceof HTMLInputElement) {
+        this.repeat.value = '10';
+      }
+      if (this.repeatValue instanceof HTMLElement) {
+        this.repeatValue.textContent = '10';
+      }
+
+      if (this.thickness instanceof HTMLInputElement) {
+        this.thickness.value = '1';
+      }
+      if (this.thicknessValue instanceof HTMLElement) {
+        this.thicknessValue.textContent = '1';
+      }
+      this.currentThickness = 1;
+
+      if (this.tileScaleToShape instanceof HTMLInputElement) {
+        this.tileScaleToShape.checked = true;
+      }
+      this.currentTileScaleMode = 'shape';
+
+      const initial = this.patterns && this.patterns[0] ? this.patterns[0].file : '';
+      if (this.select instanceof HTMLSelectElement) {
+        this.select.value = initial || '';
+      }
+      this.applySelection(initial || '');
+
+      // Reset view.
+      this.setRightView('patterns');
+
+      // Clear layers list UI.
+      this.renderLayersList();
+
+      if (this.drawOverlay instanceof HTMLCanvasElement) {
+        this.drawOverlay.style.cursor = 'crosshair';
+      }
+      if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
     }
 
     setRightView(view) {
@@ -2773,6 +2883,9 @@
     picker.init();
     new MenuController({
       onRightViewSelect: (view) => picker.setRightView(view),
+      onAction: (action) => {
+        if (action === 'reset') picker.resetToStart();
+      },
     }).init();
     new PanelsController().init();
   };

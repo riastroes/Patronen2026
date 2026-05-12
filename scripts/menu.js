@@ -1752,9 +1752,17 @@
 
       const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
 
+      const clearCropSelection = () => {
+        this.cropRectN = null;
+        this.cropRectPx = null;
+        if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+      };
+
       const out = document.createElement('canvas');
       const ctx = out.getContext('2d');
       if (!ctx) return;
+
+      let usedCropRect = false;
 
       if (hasActiveClip) {
         // Export only the selected (clipped) part.
@@ -1811,6 +1819,7 @@
 
         const cr = this.cropRectN;
         if (cr && Number.isFinite(cr.x) && Number.isFinite(cr.y) && Number.isFinite(cr.w) && Number.isFinite(cr.h)) {
+          usedCropRect = true;
           sx = Math.max(0, Math.min(sw - 1, Math.round(cr.x * sw)));
           sy = Math.max(0, Math.min(sh - 1, Math.round(cr.y * sh)));
           sWidth = Math.max(1, Math.min(sw - sx, Math.round(cr.w * sw)));
@@ -1840,6 +1849,9 @@
 
         // If the images view is open, refresh it.
         if (this.rightView === 'images') this.renderSavedImages();
+
+        // After saving a cropped export, remove the crop grid.
+        if (usedCropRect) clearCropSelection();
       };
 
       if (typeof out.toBlob === 'function') {
@@ -1870,6 +1882,8 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
+
+      if (usedCropRect) clearCropSelection();
     }
 
     makeClipKey(pathN) {

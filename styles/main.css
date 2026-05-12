@@ -251,7 +251,12 @@ body.right-collapsed #rightPanel {
   gap: 10px;
 }
 
+.saved-images__cell {
+  position: relative;
+}
+
 .saved-images__item {
+  display: block;
   width: 100%;
   aspect-ratio: 1 / 1;
   border: 1px solid var(--border);
@@ -261,6 +266,26 @@ body.right-collapsed #rightPanel {
   background-position: center;
   background-size: contain;
   cursor: pointer;
+}
+
+.saved-images__delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: white;
+  cursor: pointer;
+  line-height: 1;
+  font-size: 18px;
+  opacity: 0.85;
+}
+
+.saved-images__delete:hover {
+  opacity: 1;
 }
 
 .layers {

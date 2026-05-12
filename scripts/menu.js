@@ -121,6 +121,21 @@
           })
       );
     }
+
+    delete(id) {
+      const key = typeof id === 'string' ? id : '';
+      if (!key) return Promise.resolve(false);
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readwrite');
+            const store = tx.objectStore(this.storeName);
+            store.delete(key);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error || new Error('IndexedDB delete failed'));
+          })
+      );
+    }
   }
 
   class PanelsController {
@@ -1524,6 +1539,9 @@
             const url = URL.createObjectURL(it.blob);
             this.savedImagesObjectUrls.push(url);
 
+            const cell = document.createElement('div');
+            cell.className = 'saved-images__cell';
+
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'saved-images__item';
@@ -1545,7 +1563,29 @@
               a.click();
               a.remove();
             });
-            this.savedImagesRoot.appendChild(btn);
+
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'saved-images__delete';
+            del.textContent = '×';
+            del.title = 'Verwijder afbeelding';
+            del.setAttribute('aria-label', 'Verwijder afbeelding');
+            del.draggable = false;
+            del.addEventListener('click', (evt) => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
+              this.savedImagesDB
+                .delete(String(it.id))
+                .then(() => {
+                  this.renderSavedImages();
+                })
+                .catch(() => {});
+            });
+
+            cell.appendChild(btn);
+            cell.appendChild(del);
+            this.savedImagesRoot.appendChild(cell);
           }
         })
         .catch(() => {
@@ -2154,21 +2194,39 @@
       const y = evt.clientY - rect.top;
       const clamp01 = (n) => Math.max(0, Math.min(1, n));
 
-      // Place centered around the drop point.
-      const defaultW = 0.28;
-      const defaultH = 0.28;
-      let xN = clamp01(x / w - defaultW / 2);
-      let yN = clamp01(y / h - defaultH / 2);
-
-      // Keep fully on-canvas.
-      xN = Math.max(0, Math.min(1 - defaultW, xN));
-      yN = Math.max(0, Math.min(1 - defaultH, yN));
-
       this.savedImagesDB
         .get(id)
         .then((rec) => {
           if (!rec || !(rec.blob instanceof Blob)) return;
-          const idx = this.canvasLayers.addImageLayer(id, rec.blob, xN, yN, defaultW, defaultH);
+
+          // Place centered around the drop point, but keep the image aspect ratio.
+          const base = 0.28;
+          const iw = Number(rec.w) || 0;
+          const ih = Number(rec.h) || 0;
+          const ratio = iw > 0 && ih > 0 ? ih / iw : 1;
+
+          let wN = base;
+          let hN = base;
+          if (ratio > 0.0001) {
+            if (ratio >= 1) {
+              // Tall image: cap height.
+              hN = base;
+              wN = Math.max(0.03, base / ratio);
+            } else {
+              // Wide image: cap width.
+              wN = base;
+              hN = Math.max(0.03, base * ratio);
+            }
+          }
+
+          let xN = clamp01(x / w - wN / 2);
+          let yN = clamp01(y / h - hN / 2);
+
+          // Keep fully on-canvas.
+          xN = Math.max(0, Math.min(1 - wN, xN));
+          yN = Math.max(0, Math.min(1 - hN, yN));
+
+          const idx = this.canvasLayers.addImageLayer(id, rec.blob, xN, yN, wN, hN);
           this.setActiveLayerIndex(idx);
           this.syncActiveShapeToLayerIndex(idx);
           this.renderLayersList();

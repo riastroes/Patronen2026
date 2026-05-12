@@ -259,7 +259,7 @@ body.right-collapsed #rightPanel {
   background: rgba(255, 255, 255, 0.35);
   background-repeat: no-repeat;
   background-position: center;
-  background-size: cover;
+  background-size: contain;
   cursor: pointer;
 }
 
@@ -339,7 +339,7 @@ body.right-collapsed #rightPanel {
   background: rgba(255, 255, 255, 0.35);
   background-repeat: no-repeat;
   background-position: center;
-  background-size: cover;
+  background-size: contain;
 }
 
 .layers__right {

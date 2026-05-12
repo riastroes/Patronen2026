@@ -56,7 +56,7 @@
     constructor() {
       this.dbName = 'Patronen2026';
       this.storeName = 'savedImages';
-      this.version = 1;
+      this.version = 2;
       this.dbPromise = null;
     }
 
@@ -73,6 +73,11 @@
           const db = req.result;
           if (!db.objectStoreNames.contains(this.storeName)) {
             db.createObjectStore(this.storeName, { keyPath: 'id' });
+          }
+
+          // Ensure future stores exist as the app evolves.
+          if (!db.objectStoreNames.contains('savedShapes')) {
+            db.createObjectStore('savedShapes', { keyPath: 'id' });
           }
         };
         req.onsuccess = () => resolve(req.result);
@@ -133,6 +138,81 @@
             store.delete(key);
             tx.oncomplete = () => resolve(true);
             tx.onerror = () => reject(tx.error || new Error('IndexedDB delete failed'));
+          })
+      );
+    }
+  }
+
+  class SavedShapesDB {
+    constructor() {
+      this.dbName = 'Patronen2026';
+      this.storeName = 'savedShapes';
+      this.version = 2;
+      this.dbPromise = null;
+    }
+
+    open() {
+      if (this.dbPromise) return this.dbPromise;
+      this.dbPromise = new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) {
+          reject(new Error('IndexedDB not available'));
+          return;
+        }
+
+        const req = indexedDB.open(this.dbName, this.version);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+
+          if (!db.objectStoreNames.contains('savedImages')) {
+            db.createObjectStore('savedImages', { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains(this.storeName)) {
+            db.createObjectStore(this.storeName, { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+      });
+      return this.dbPromise;
+    }
+
+    put(record) {
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readwrite');
+            const store = tx.objectStore(this.storeName);
+            store.put(record);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+          })
+      );
+    }
+
+    getAll() {
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readonly');
+            const store = tx.objectStore(this.storeName);
+            const req = store.getAll();
+            req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+            req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+          })
+      );
+    }
+
+    get(id) {
+      const key = typeof id === 'string' ? id : '';
+      if (!key) return Promise.resolve(null);
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readonly');
+            const store = tx.objectStore(this.storeName);
+            const req = store.get(key);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
           })
       );
     }
@@ -1253,7 +1333,10 @@
       this.preview = qs('patternPreview');
       this.rightViewPatterns = qs('rightViewPatterns');
       this.rightViewImages = qs('rightViewImages');
+      this.rightViewShapes = qs('rightViewShapes');
       this.savedImagesRoot = qs('savedImages');
+      this.savedShapesRoot = qs('savedShapes');
+      this.saveShapeBtn = qs('saveShapeBtn');
       this.canvas = qs('mainCanvas');
       this.layersRoot = qs('layersRoot');
 	  this.cropToolBtn = qs('cropToolBtn');
@@ -1267,6 +1350,7 @@
 
     this.rightView = 'patterns';
     this.savedImagesDB = new SavedImagesDB();
+  this.savedShapesDB = new SavedShapesDB();
     this.savedImagesObjectUrls = [];
 	  this.layerThumbObjectUrls = [];
 
@@ -1360,6 +1444,7 @@
     this.initThicknessControl();
       this.initTileScaleToggle();
       this.initImageActions();
+      this.initShapeActions();
 
       const initial = this.patterns && this.patterns[0] ? this.patterns[0].file : null;
       this.select.value = initial || '';
@@ -1483,7 +1568,7 @@
     }
 
     setRightView(view) {
-      const next = view === 'images' ? 'images' : 'patterns';
+      const next = view === 'images' ? 'images' : view === 'shapes' ? 'shapes' : 'patterns';
       this.rightView = next;
 
       if (this.rightViewPatterns instanceof HTMLElement) {
@@ -1493,10 +1578,15 @@
         this.rightViewImages.hidden = next !== 'images';
       }
 
+      if (this.rightViewShapes instanceof HTMLElement) {
+        this.rightViewShapes.hidden = next !== 'shapes';
+      }
+
       // Ensure the right panel is visible.
       document.body.classList.remove('right-collapsed');
 
       if (next === 'images') this.renderSavedImages();
+      if (next === 'shapes') this.renderSavedShapes();
     }
 
     clearSavedImagesObjectUrls() {
@@ -1590,6 +1680,131 @@
         })
         .catch(() => {
           this.savedImagesRoot.textContent = 'Kan opgeslagen afbeeldingen niet laden.';
+        });
+    }
+
+    initShapeActions() {
+      if (this.saveShapeBtn && this.saveShapeBtn.dataset.bound !== '1') {
+        this.saveShapeBtn.dataset.bound = '1';
+        this.saveShapeBtn.addEventListener('click', () => {
+          const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
+          if (!hasActive) return;
+          const clipKey = this.activeClipKey || this.makeClipKey(this.activeClipPathN);
+          if (!clipKey) return;
+
+          const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const record = {
+            id,
+            createdAt: Date.now(),
+            clipPathN: this.activeClipPathN.map((p) => [Number(p[0]), Number(p[1])]),
+            clipKey,
+          };
+
+          this.savedShapesDB.put(record).catch(() => {});
+          if (this.rightView === 'shapes') this.renderSavedShapes();
+        });
+      }
+    }
+
+    placeClipPathNAt(clipPathN, targetCxN, targetCyN) {
+      if (!Array.isArray(clipPathN) || clipPathN.length < 3) return null;
+      const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const p of clipPathN) {
+        if (!Array.isArray(p) || p.length < 2) continue;
+        const x = clamp01(Number(p[0]));
+        const y = clamp01(Number(p[1]));
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+      if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+
+      let dx = clamp01(Number(targetCxN)) - cx;
+      let dy = clamp01(Number(targetCyN)) - cy;
+
+      // Clamp translation to keep shape fully inside 0..1.
+      const minDx = -minX;
+      const maxDx = 1 - maxX;
+      const minDy = -minY;
+      const maxDy = 1 - maxY;
+      dx = Math.max(minDx, Math.min(maxDx, dx));
+      dy = Math.max(minDy, Math.min(maxDy, dy));
+
+      const next = clipPathN
+        .map((p) => [clamp01(Number(p[0]) + dx), clamp01(Number(p[1]) + dy)])
+        .filter((p) => Array.isArray(p) && p.length === 2);
+      return next.length >= 3 ? next : null;
+    }
+
+    clipPathNToPreviewDataUrl(clipPathN) {
+      if (!Array.isArray(clipPathN) || clipPathN.length < 3) return '';
+      const clamp01 = (n) => Math.max(0, Math.min(1, n));
+      const pts = clipPathN
+        .map((p) => {
+          const x = Math.round(clamp01(Number(p[0])) * 1000) / 10;
+          const y = Math.round(clamp01(Number(p[1])) * 1000) / 10;
+          return `${x},${y}`;
+        })
+        .join(' ');
+
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="none"/><polygon points="${pts}" fill="none" stroke="#000" stroke-width="2"/></svg>`;
+      return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    }
+
+    renderSavedShapes() {
+      if (!(this.savedShapesRoot instanceof HTMLElement)) return;
+      this.savedShapesRoot.innerHTML = '';
+
+      this.savedShapesDB
+        .getAll()
+        .then((items) => {
+          const sorted = items
+            .filter((it) => it && typeof it.id === 'string' && Array.isArray(it.clipPathN) && it.clipPathN.length >= 3)
+            .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+
+          if (sorted.length === 0) {
+            this.savedShapesRoot.textContent = 'Nog geen opgeslagen vormen.';
+            return;
+          }
+
+          for (const it of sorted) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'saved-shapes__item';
+            btn.setAttribute('aria-label', 'Opgeslagen vorm');
+            btn.style.backgroundImage = `url("${this.clipPathNToPreviewDataUrl(it.clipPathN)}")`;
+            btn.draggable = true;
+            btn.dataset.shapeId = it.id;
+            btn.addEventListener('dragstart', (evt) => {
+              if (!evt.dataTransfer) return;
+              evt.dataTransfer.effectAllowed = 'copy';
+              evt.dataTransfer.setData('application/x-patronen2026-shape', String(it.id));
+              evt.dataTransfer.setData('text/plain', String(it.id));
+            });
+            btn.addEventListener('click', () => {
+              const next = this.placeClipPathNAt(it.clipPathN, 0.5, 0.5) || it.clipPathN;
+              this.activeClipPathN = next;
+              this.activeClipKey = typeof it.clipKey === 'string' && it.clipKey ? it.clipKey : this.makeClipKey(next);
+              this.setActiveLayerIndex(-1);
+              this.toolMode = 'draw';
+              if (this.drawOverlay) this.drawOverlay.style.cursor = 'crosshair';
+              if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+              this.renderLayersList();
+            });
+            this.savedShapesRoot.appendChild(btn);
+          }
+        })
+        .catch(() => {
+          this.savedShapesRoot.textContent = 'Kan opgeslagen vormen niet laden.';
         });
     }
 
@@ -2232,6 +2447,34 @@
       const dt = evt.dataTransfer;
       if (!dt) return;
 
+      // Shapes
+      const shapeId = dt.getData('application/x-patronen2026-shape');
+      const shapeKey = typeof shapeId === 'string' ? shapeId.trim() : '';
+      if (shapeKey) {
+        const rect = overlay.getBoundingClientRect();
+        const w = Math.max(1, rect.width);
+        const h = Math.max(1, rect.height);
+        const x = evt.clientX - rect.left;
+        const y = evt.clientY - rect.top;
+        const cxN = Math.max(0, Math.min(1, x / w));
+        const cyN = Math.max(0, Math.min(1, y / h));
+
+        this.savedShapesDB
+          .get(shapeKey)
+          .then((rec) => {
+            if (!rec || !Array.isArray(rec.clipPathN) || rec.clipPathN.length < 3) return;
+            const next = this.placeClipPathNAt(rec.clipPathN, cxN, cyN) || rec.clipPathN;
+            this.activeClipPathN = next;
+            this.activeClipKey = typeof rec.clipKey === 'string' && rec.clipKey ? rec.clipKey : this.makeClipKey(next);
+            this.setActiveLayerIndex(-1);
+            this.toolMode = 'draw';
+            if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+            this.renderLayersList();
+          })
+          .catch(() => {});
+        return;
+      }
+
       const imageId = dt.getData('application/x-patronen2026-image') || dt.getData('text/plain');
       const id = typeof imageId === 'string' ? imageId.trim() : '';
       if (!id) return;
@@ -2559,8 +2802,8 @@
       // If a clipped layer is selected and the user clicks inside its shape,
       // we drag the shape instead of starting a new drawing.
       const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
-      const canDrag = this.activeLayerIndex >= 0 && hasActiveClip;
-      if (canDrag) {
+      const canDragSelection = hasActiveClip;
+      if (canDragSelection) {
         const { w, h } = getOverlaySize();
         const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
         if (pointInPolygon(p[0], p[1], polyPx)) {
@@ -2656,18 +2899,25 @@
 
             if (nextClipN.length < 3) return;
 
-            const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-            const layer = layers[this.dragLayerIndex];
-            if (!layer) return;
-
             const nextKey = this.makeClipKey(nextClipN);
-            layer.clipPathN = nextClipN;
-            layer.clipKey = nextKey;
 
+            if (this.dragLayerIndex >= 0) {
+              const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+              const layer = layers[this.dragLayerIndex];
+              if (!layer) return;
+
+              layer.clipPathN = nextClipN;
+              layer.clipKey = nextKey;
+              this.activeClipPathN = nextClipN.slice();
+              this.activeClipKey = nextKey;
+              this.canvasLayers.redrawAllLayers();
+              drawOverlayPath();
+              return;
+            }
+
+            // Free selection (no layer): move only the active selection.
             this.activeClipPathN = nextClipN.slice();
             this.activeClipKey = nextKey;
-
-            this.canvasLayers.redrawAllLayers();
             drawOverlayPath();
           });
         }

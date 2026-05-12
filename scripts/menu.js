@@ -1540,7 +1540,7 @@
         }
 
 		this.canvasLayers.addLayer(this.currentFile, this.getRepeatCount(), this.currentColor, this.getThickness());
-		this.setActiveLayerIndex(this.canvasLayers.layers.length - 1);
+    this.setLayerSelectionSingle(this.canvasLayers.layers.length - 1);
 		this.renderLayersList();
       });
 
@@ -2211,7 +2211,7 @@
         );
       }
 
-      this.setActiveLayerIndex(idx);
+      this.setLayerSelectionSingle(idx);
       this.renderLayersList();
 
       // Re-render once the async pixel-based visible-colors computation finishes.
@@ -2364,9 +2364,6 @@
       }
       const idx = Math.max(0, Math.min(n - 1, raw));
       this.activeLayerIndex = idx;
-
-      // Programmatic selection defaults to single-select.
-      this.selectedLayerIndices = new Set([idx]);
     }
 
     removeLayerIndex(layerIndex) {
@@ -2644,8 +2641,7 @@
               return;
             }
 
-            this.setActiveLayerIndex(Math.min(this.activeLayerIndex, nextN - 1));
-            this.syncActiveShapeToLayerIndex(this.activeLayerIndex);
+            this.setLayerSelectionSingle(Math.min(this.activeLayerIndex, nextN - 1));
             this.renderLayersList();
             return;
           }
@@ -2781,8 +2777,7 @@
           yN = Math.max(0, Math.min(1 - hN, yN));
 
           const idx = this.canvasLayers.addImageLayer(id, rec.blob, xN, yN, wN, hN);
-          this.setActiveLayerIndex(idx);
-          this.syncActiveShapeToLayerIndex(idx);
+          this.setLayerSelectionSingle(idx);
           this.renderLayersList();
         })
         .catch(() => {});

@@ -118,6 +118,30 @@
       return true;
     }
 
+    reorderLayersByView(fromViewIndex, toViewIndex) {
+      const fromV = Number.isFinite(fromViewIndex) ? Math.trunc(fromViewIndex) : -1;
+      const toVRaw = Number.isFinite(toViewIndex) ? Math.trunc(toViewIndex) : -1;
+      if (fromV < 0) return false;
+
+      const view = this.layers.slice().reverse();
+      if (fromV >= view.length) return false;
+
+      let toV = toVRaw;
+      if (toV < 0) toV = 0;
+      if (toV > view.length) toV = view.length;
+      if (toV === fromV || toV === fromV + 1) return false;
+
+      const [moved] = view.splice(fromV, 1);
+      const insertAt = toV > fromV ? Math.max(0, toV - 1) : toV;
+      view.splice(insertAt, 0, moved);
+
+      this.layers = view.reverse();
+      // Layer indices shift; cancel scheduled index-based work.
+      this.cancelAllVisibleColorsSchedules();
+      this.redrawAllLayers();
+      return true;
+    }
+
     getOffscreenCtx(w, h) {
       const cw = Math.max(1, Math.round(w));
       const ch = Math.max(1, Math.round(h));
@@ -593,7 +617,7 @@
   buildSvgVariant(svgText, color, thickness) {
     const safeColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
     const t = Number.isFinite(thickness) ? Math.round(thickness) : 1;
-    const clamped = Math.max(1, Math.min(100, t));
+    const clamped = Math.max(1, Math.min(200, t));
 
     const parser = new DOMParser();
     const doc = parser.parseFromString(svgText, 'image/svg+xml');
@@ -626,7 +650,8 @@
     const safeColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
     const t = Number.isFinite(thickness) ? Math.round(thickness) : 1;
     const clamped = Math.max(1, Math.min(100, t));
-    const key = `${file}|${safeColor}|${clamped}`;
+    const effective = file === '21-stip.svg' ? Math.min(200, clamped * 2) : clamped;
+    const key = `${file}|${safeColor}|${effective}`;
 
     const cached = this.variantCache.get(key);
     if (cached?.img?.complete) return Promise.resolve(cached.img);
@@ -634,7 +659,7 @@
 
     const img = new Image();
     const promise = this.loadSvgText(file)
-      .then((svgText) => this.buildSvgVariant(svgText, safeColor, clamped))
+      .then((svgText) => this.buildSvgVariant(svgText, safeColor, effective))
       .then((variantText) =>
         new Promise((resolve, reject) => {
           img.onload = () => resolve(img);
@@ -839,9 +864,17 @@
 
       if (this.layers.length === 1) this.resizeToCSSPixels();
 
+      const needsFullRedraw = layerIndex >= 0 && layerIndex < this.layers.length - 1;
+
       if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
       this.pendingDraw = window.setTimeout(() => {
         this.pendingDraw = 0;
+
+        if (needsFullRedraw) {
+          this.redrawAllLayers();
+          return;
+        }
+
         this.drawQueue = this.drawQueue
 			.then(() => this.loadPatternVariantImage(file, color, thickness))
           .then((img) => {
@@ -885,9 +918,17 @@
 
       if (this.layers.length === 1) this.resizeToCSSPixels();
 
+      const needsFullRedraw = layerIndex >= 0 && layerIndex < this.layers.length - 1;
+
       if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
       this.pendingDraw = window.setTimeout(() => {
         this.pendingDraw = 0;
+
+        if (needsFullRedraw) {
+          this.redrawAllLayers();
+          return;
+        }
+
         this.drawQueue = this.drawQueue
           .then(() => {
             this.drawSolidLayer(color, safeClipN);
@@ -897,6 +938,65 @@
 
       this.scheduleVisibleColorsCompute(layerIndex);
       return layerIndex;
+    }
+
+    addSolidLayer(color) {
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+      this.layers.push({
+        clipPathN: null,
+        clipKey: null,
+        paints: [{ kind: 'solid', file: null, color: c }],
+        visibleColors: [c],
+      });
+
+      const layerIndex = this.layers.length - 1;
+      if (this.layers.length === 1) this.resizeToCSSPixels();
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+        this.drawQueue = this.drawQueue
+          .then(() => {
+            this.drawSolidLayer(c, null);
+          })
+          .catch(() => {});
+      }, 0);
+
+      return layerIndex;
+    }
+
+    addSolidPaintToLayerIndex(layerIndex, color) {
+      const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+      const layer = this.layers?.[idx];
+      if (!layer) return false;
+
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+      if (!Array.isArray(layer.paints)) layer.paints = [];
+      layer.paints.push({ kind: 'solid', file: null, color: c });
+
+      const clipPathN = Array.isArray(layer.clipPathN) ? layer.clipPathN : null;
+      if (!clipPathN) layer.visibleColors = [c];
+      else this.addOptimisticVisibleColor(layer, c);
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+
+        const needsFullRedraw = idx >= 0 && idx < this.layers.length - 1;
+        if (needsFullRedraw) {
+          this.redrawAllLayers();
+          return;
+        }
+
+        this.drawQueue = this.drawQueue
+          .then(() => {
+            this.drawSolidLayer(c, clipPathN);
+          })
+          .catch(() => {});
+      }, 0);
+
+      if (clipPathN) this.scheduleVisibleColorsCompute(idx);
+      return true;
     }
 
     hasLayers() {
@@ -910,6 +1010,8 @@
       this.preview = qs('patternPreview');
       this.canvas = qs('mainCanvas');
       this.layersRoot = qs('layersRoot');
+	  this.cropToolBtn = qs('cropToolBtn');
+	  this.saveImageBtn = qs('saveImageBtn');
       this.repeat = qs('patternRepeat');
       this.repeatValue = qs('patternRepeatValue');
       this.palette = qs('palette');
@@ -939,6 +1041,7 @@
         { label: '16 Boog (1 lijn)', file: '16-boog.svg' },
         { label: '20 Boog op kop (1 lijn)', file: '20-boog-op-kop.svg' },
         { label: '17 Cirkel (1 lijn)', file: '17-cirkel.svg' },
+        { label: '21 Stip (1 punt)', file: '21-stip.svg' },
         { label: '18 Sinus (1 lijn)', file: '18-sinus.svg' },
         { label: '19 Spiraal (1 lijn)', file: '19-spiraal.svg' },
       ];
@@ -958,9 +1061,28 @@
       this.activeClipPathN = null;
       this.activeClipKey = null;
 
+      this.isDraggingShape = false;
+      this.dragPointerId = null;
+      this.dragLayerIndex = -1;
+      this.dragStartPos = null;
+      this.dragStartClipPathN = null;
+      this.dragRaf = 0;
+      this.dragPendingPos = null;
+
+      this.toolMode = 'draw';
+      this.isCropping = false;
+      this.cropPointerId = null;
+      this.cropStartPos = null;
+      this.cropPendingPos = null;
+      this.cropRectPx = null;
+      this.cropRectN = null;
+
       this.activeLayerIndex = -1;
 
       this.visibleColorsRenderToken = 0;
+
+      this.draggingLayerViewIndex = -1;
+      this.dragOverItem = null;
     }
 
     init() {
@@ -976,6 +1098,7 @@
 	  this.initPaletteControl();
     this.initThicknessControl();
       this.initTileScaleToggle();
+      this.initImageActions();
 
       const initial = this.patterns[0]?.file;
       this.select.value = initial || '';
@@ -992,7 +1115,10 @@
           return;
         }
 
-        if (!this.currentFile) return;
+        if (!this.currentFile) {
+          this.applySolidToSelectedLayerOrCanvas();
+          return;
+        }
 
 		this.canvasLayers.addLayer(this.currentFile, this.getRepeatCount(), this.currentColor, this.getThickness());
 		this.setActiveLayerIndex(this.canvasLayers.layers.length - 1);
@@ -1000,6 +1126,7 @@
       });
 
       this.initDrawShapeToMask();
+	  this.initLayerReorderDragDrop();
 
       this.renderLayersList();
 
@@ -1008,6 +1135,162 @@
         if (!this.canvasLayers.hasLayers()) return;
         this.canvasLayers.redrawAllLayers();
       });
+    }
+
+    initImageActions() {
+      if (this.cropToolBtn && this.cropToolBtn.dataset.bound !== '1') {
+        this.cropToolBtn.dataset.bound = '1';
+        this.cropToolBtn.addEventListener('click', () => {
+          this.toolMode = 'crop';
+          // Start a new crop selection; the last crop is still shown until replaced.
+          this.isCropping = false;
+          this.cropPointerId = null;
+          this.cropStartPos = null;
+          this.cropPendingPos = null;
+          this.cropRectPx = null;
+          if (this.drawOverlay) this.drawOverlay.style.cursor = 'crosshair';
+        });
+      }
+
+      if (this.saveImageBtn && this.saveImageBtn.dataset.bound !== '1') {
+        this.saveImageBtn.dataset.bound = '1';
+        this.saveImageBtn.addEventListener('click', () => {
+          this.saveCurrentImage();
+        });
+      }
+    }
+
+    initLayerReorderDragDrop() {
+      if (!(this.layersRoot instanceof HTMLElement)) return;
+      if (this.layersRoot.dataset.dndBound === '1') return;
+      this.layersRoot.dataset.dndBound = '1';
+
+      const cleanupOver = () => {
+        if (this.dragOverItem) {
+          this.dragOverItem.classList.remove('is-drop-target');
+          this.dragOverItem = null;
+        }
+      };
+
+      this.layersRoot.addEventListener('dragstart', (evt) => {
+        const target = evt.target instanceof HTMLElement ? evt.target : null;
+        const item = target?.closest?.('.layers__item');
+        if (!(item instanceof HTMLElement)) return;
+
+        // Avoid starting a drag when interacting with buttons/inputs.
+        if (target && (target.closest('button') || target.closest('input') || target.closest('select'))) {
+          evt.preventDefault();
+          return;
+        }
+
+        const v = Number(item.dataset.viewIndex);
+        if (!Number.isFinite(v) || v < 0) {
+          evt.preventDefault();
+          return;
+        }
+
+        this.draggingLayerViewIndex = Math.trunc(v);
+        item.classList.add('is-dragging');
+        cleanupOver();
+
+        if (evt.dataTransfer) {
+          evt.dataTransfer.effectAllowed = 'move';
+          evt.dataTransfer.setData('text/plain', String(this.draggingLayerViewIndex));
+        }
+      });
+
+      this.layersRoot.addEventListener('dragover', (evt) => {
+        if (this.draggingLayerViewIndex < 0) return;
+        const target = evt.target instanceof HTMLElement ? evt.target : null;
+        const item = target?.closest?.('.layers__item');
+        if (!(item instanceof HTMLElement)) return;
+
+        evt.preventDefault();
+        if (evt.dataTransfer) evt.dataTransfer.dropEffect = 'move';
+
+        if (this.dragOverItem && this.dragOverItem !== item) {
+          this.dragOverItem.classList.remove('is-drop-target');
+        }
+        this.dragOverItem = item;
+        item.classList.add('is-drop-target');
+      });
+
+      this.layersRoot.addEventListener('drop', (evt) => {
+        if (this.draggingLayerViewIndex < 0) return;
+        const target = evt.target instanceof HTMLElement ? evt.target : null;
+        const item = target?.closest?.('.layers__item');
+        if (!(item instanceof HTMLElement)) return;
+
+        evt.preventDefault();
+
+        const fromV = this.draggingLayerViewIndex;
+        const toVBase = Number(item.dataset.viewIndex);
+        if (!Number.isFinite(toVBase) || toVBase < 0) return;
+
+        const rect = item.getBoundingClientRect();
+        const after = evt.clientY > rect.top + rect.height / 2;
+        const toV = Math.trunc(toVBase) + (after ? 1 : 0);
+
+        const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+        const activeRef = this.activeLayerIndex >= 0 ? layers[this.activeLayerIndex] : null;
+
+        const changed = this.canvasLayers.reorderLayersByView(fromV, toV);
+        if (changed) {
+          const nextLayers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+          if (activeRef) {
+            const nextIdx = nextLayers.indexOf(activeRef);
+            this.activeLayerIndex = Number.isFinite(nextIdx) && nextIdx >= 0 ? nextIdx : -1;
+          }
+          this.syncActiveShapeToLayerIndex(this.activeLayerIndex);
+          this.renderLayersList();
+        }
+
+        cleanupOver();
+        this.draggingLayerViewIndex = -1;
+      });
+
+      this.layersRoot.addEventListener('dragend', (evt) => {
+        const target = evt.target instanceof HTMLElement ? evt.target : null;
+        const item = target?.closest?.('.layers__item');
+        if (item instanceof HTMLElement) item.classList.remove('is-dragging');
+        cleanupOver();
+        this.draggingLayerViewIndex = -1;
+      });
+    }
+
+    saveCurrentImage() {
+      if (!(this.canvas instanceof HTMLCanvasElement)) return;
+      const src = this.canvas;
+      const sw = Math.max(1, src.width);
+      const sh = Math.max(1, src.height);
+
+      let sx = 0;
+      let sy = 0;
+      let sWidth = sw;
+      let sHeight = sh;
+
+      const cr = this.cropRectN;
+      if (cr && Number.isFinite(cr.x) && Number.isFinite(cr.y) && Number.isFinite(cr.w) && Number.isFinite(cr.h)) {
+        sx = Math.max(0, Math.min(sw - 1, Math.round(cr.x * sw)));
+        sy = Math.max(0, Math.min(sh - 1, Math.round(cr.y * sh)));
+        sWidth = Math.max(1, Math.min(sw - sx, Math.round(cr.w * sw)));
+        sHeight = Math.max(1, Math.min(sh - sy, Math.round(cr.h * sh)));
+      }
+
+      const out = document.createElement('canvas');
+      out.width = sWidth;
+      out.height = sHeight;
+      const ctx = out.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(src, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+
+      const url = out.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'patronen2026.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     }
 
     makeClipKey(pathN) {
@@ -1107,6 +1390,82 @@
       this.renderLayersList();
     }
 
+    removeColorFromLayerIndex(layerIndex, color) {
+      const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '';
+      if (idx < 0 || !c) return;
+
+      const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+      const layer = layers[idx];
+      if (!layer) return;
+
+      const paints = Array.isArray(layer.paints) ? layer.paints : [];
+      const nextPaints = paints.filter((p) => {
+        const pc = typeof p?.color === 'string' && p.color.trim() ? p.color.trim() : '';
+        return pc !== c;
+      });
+
+      if (nextPaints.length === 0) {
+        this.removeLayerIndex(idx);
+        return;
+      }
+
+      layer.paints = nextPaints;
+
+      if (Array.isArray(layer.visibleColors)) {
+        layer.visibleColors = layer.visibleColors.filter((x) => (typeof x === 'string' ? x.trim() : '') !== c);
+      }
+
+      this.canvasLayers.redrawAllLayers();
+
+      const hasClip = Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+      if (hasClip) {
+        this.canvasLayers.scheduleVisibleColorsCompute(idx)
+          .then(() => this.renderLayersList())
+          .catch(() => {});
+      }
+
+      this.renderLayersList();
+    }
+
+    applySolidToSelectedLayerOrCanvas() {
+      const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+
+      if (this.activeLayerIndex >= 0 && this.activeLayerIndex < layers.length) {
+        const layer = layers[this.activeLayerIndex];
+        const hasClip = layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+
+        if (hasClip) {
+          const clipPathN = layer.clipPathN;
+          const clipKey = typeof layer.clipKey === 'string' && layer.clipKey
+            ? layer.clipKey
+            : this.makeClipKey(clipPathN);
+
+          const idx = this.canvasLayers.addClippedSolidLayer(this.currentColor, clipPathN, clipKey);
+          this.setActiveLayerIndex(idx);
+          this.syncActiveShapeToLayerIndex(idx);
+          this.renderLayersList();
+
+          const token = ++this.visibleColorsRenderToken;
+          this.canvasLayers.getLatestVisibleColorsPromise(idx)
+            .then(() => {
+              if (token !== this.visibleColorsRenderToken) return;
+              this.renderLayersList();
+            })
+            .catch(() => {});
+          return;
+        }
+
+        this.canvasLayers.addSolidPaintToLayerIndex(this.activeLayerIndex, this.currentColor);
+        this.renderLayersList();
+        return;
+      }
+
+      const idx = this.canvasLayers.addSolidLayer(this.currentColor);
+      this.setActiveLayerIndex(idx);
+      this.renderLayersList();
+    }
+
     renderLayersList() {
       if (!(this.layersRoot instanceof HTMLElement)) return;
       const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
@@ -1114,11 +1473,15 @@
       this.layersRoot.innerHTML = '';
       const groupName = 'activeLayer';
 
-      for (let i = 0; i < layers.length; i++) {
+      // Newest layer first (top of list).
+      for (let viewIndex = 0; viewIndex < layers.length; viewIndex++) {
+        const i = layers.length - 1 - viewIndex; // model index
         const layer = layers[i] || {};
 
         const item = document.createElement('label');
         item.className = 'layers__item';
+        item.draggable = true;
+        item.dataset.viewIndex = String(viewIndex);
 
         const left = document.createElement('span');
         left.className = 'layers__left';
@@ -1128,6 +1491,7 @@
         radio.name = groupName;
         radio.value = String(i);
         radio.checked = i === this.activeLayerIndex;
+        radio.draggable = false;
         radio.addEventListener('change', () => {
           this.activeLayerIndex = i;
           this.syncActiveShapeToLayerIndex(i);
@@ -1136,7 +1500,7 @@
 
         const num = document.createElement('span');
         num.className = 'layers__num';
-        num.textContent = String(i + 1);
+        num.textContent = String(viewIndex + 1);
 
         left.appendChild(radio);
         left.appendChild(num);
@@ -1167,9 +1531,19 @@
         }
 
         for (const c of colors) {
-          const s = document.createElement('span');
+          const s = document.createElement('button');
+          s.type = 'button';
           s.className = 'layers__swatch';
           s.style.backgroundColor = c;
+          s.title = 'Verwijder kleur uit layer';
+          s.setAttribute('aria-label', `Verwijder kleur ${c} uit layer`);
+          s.draggable = false;
+          s.addEventListener('click', (evt) => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
+            this.removeColorFromLayerIndex(i, c);
+          });
           swatches.appendChild(s);
         }
 
@@ -1182,6 +1556,7 @@
         del.textContent = '×';
         del.title = 'Verwijder layer';
         del.setAttribute('aria-label', 'Verwijder layer');
+        del.draggable = false;
         del.addEventListener('click', (evt) => {
           evt.preventDefault();
           evt.stopPropagation();
@@ -1239,6 +1614,31 @@
       return [evt.clientX - rect.left, evt.clientY - rect.top];
     };
 
+    const getOverlaySize = () => {
+      const rect = overlay.getBoundingClientRect();
+      return {
+        w: Math.max(1, rect.width),
+        h: Math.max(1, rect.height),
+      };
+    };
+
+    const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+    const pointInPolygon = (x, y, poly) => {
+      if (!Array.isArray(poly) || poly.length < 3) return false;
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i][0];
+        const yi = poly[i][1];
+        const xj = poly[j][0];
+        const yj = poly[j][1];
+
+        const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 0.0000001) + xi;
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    };
+
     const clearOverlay = () => {
       const ctx = this.drawOverlayCtx;
       if (!ctx) return;
@@ -1267,22 +1667,53 @@
         shouldClose = true;
       }
 
-      if (!points || points.length < 2) return;
+      if (points && points.length >= 2) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = '#000000';
+        ctx.globalAlpha = 0.8;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(points[0][0], points[0][1]);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+        if (shouldClose) ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+      }
 
-      ctx.save();
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = '#000000';
-      ctx.globalAlpha = 0.8;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(points[0][0], points[0][1]);
-      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
-      if (shouldClose) ctx.closePath();
-      ctx.stroke();
-      ctx.restore();
+      // Crop rectangle preview (if any)
+      const rectPx = this.cropRectPx;
+      const rectN = this.cropRectN;
+      let rx = null;
+      let ry = null;
+      let rw = null;
+      let rh = null;
+      if (rectPx && Number.isFinite(rectPx.x) && Number.isFinite(rectPx.y) && Number.isFinite(rectPx.w) && Number.isFinite(rectPx.h)) {
+        rx = rectPx.x;
+        ry = rectPx.y;
+        rw = rectPx.w;
+        rh = rectPx.h;
+      } else if (rectN && Number.isFinite(rectN.x) && Number.isFinite(rectN.y) && Number.isFinite(rectN.w) && Number.isFinite(rectN.h)) {
+        const { w, h } = getOverlaySize();
+        rx = rectN.x * w;
+        ry = rectN.y * h;
+        rw = rectN.w * w;
+        rh = rectN.h * h;
+      }
+
+      if (rw && rh && rw > 1 && rh > 1) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = '#000000';
+        ctx.globalAlpha = 0.9;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.restore();
+      }
     };
 
     this.renderDrawOverlay = drawOverlayPath;
@@ -1290,33 +1721,224 @@
     const minDist = 2;
 
     overlay.addEventListener('pointerdown', (evt) => {
-      if (!this.currentFile) return;
       if (evt.button !== 0) return;
+
+      const p = getPos(evt);
+
+      if (this.toolMode === 'crop') {
+        this.isCropping = true;
+        this.cropPointerId = evt.pointerId;
+        this.cropStartPos = p;
+        this.cropPendingPos = p;
+        this.cropRectPx = { x: p[0], y: p[1], w: 0, h: 0 };
+        overlay.setPointerCapture(evt.pointerId);
+        overlay.style.cursor = 'crosshair';
+        drawOverlayPath();
+        evt.preventDefault();
+        return;
+      }
+
+      // If a clipped layer is selected and the user clicks inside its shape,
+      // we drag the shape instead of starting a new drawing.
+      const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
+      const canDrag = this.activeLayerIndex >= 0 && hasActiveClip;
+      if (canDrag) {
+        const { w, h } = getOverlaySize();
+        const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
+        if (pointInPolygon(p[0], p[1], polyPx)) {
+          this.isDraggingShape = true;
+          this.dragPointerId = evt.pointerId;
+          this.dragLayerIndex = this.activeLayerIndex;
+          this.dragStartPos = p;
+          this.dragStartClipPathN = this.activeClipPathN.map((q) => [q[0], q[1]]);
+          this.dragPendingPos = p;
+          overlay.setPointerCapture(evt.pointerId);
+          overlay.style.cursor = 'grabbing';
+          evt.preventDefault();
+          return;
+        }
+      }
 
       this.isDrawing = true;
       this.drawPointerId = evt.pointerId;
       overlay.setPointerCapture(evt.pointerId);
 
-      const p = getPos(evt);
       this.drawPath = [p];
       drawOverlayPath();
     });
 
     overlay.addEventListener('pointermove', (evt) => {
-      if (!this.isDrawing) return;
-      if (this.drawPointerId !== evt.pointerId) return;
-
       const p = getPos(evt);
-      const last = this.drawPath[this.drawPath.length - 1];
-      const dx = p[0] - last[0];
-      const dy = p[1] - last[1];
-      if (Math.hypot(dx, dy) < minDist) return;
 
-      this.drawPath.push(p);
-      drawOverlayPath();
+      if (this.toolMode === 'crop' && !this.isCropping) {
+        overlay.style.cursor = 'crosshair';
+        return;
+      }
+
+      if (this.isCropping) {
+        if (this.cropPointerId !== evt.pointerId) return;
+        if (!Array.isArray(this.cropStartPos) || this.cropStartPos.length < 2) return;
+        this.cropPendingPos = p;
+        const x0 = this.cropStartPos[0];
+        const y0 = this.cropStartPos[1];
+        const x1 = p[0];
+        const y1 = p[1];
+        const rx = Math.min(x0, x1);
+        const ry = Math.min(y0, y1);
+        const rw = Math.abs(x1 - x0);
+        const rh = Math.abs(y1 - y0);
+        this.cropRectPx = { x: rx, y: ry, w: rw, h: rh };
+        drawOverlayPath();
+        evt.preventDefault();
+        return;
+      }
+
+      if (this.isDraggingShape) {
+        if (this.dragPointerId !== evt.pointerId) return;
+        this.dragPendingPos = p;
+
+        if (!this.dragRaf) {
+          this.dragRaf = window.requestAnimationFrame(() => {
+            this.dragRaf = 0;
+            if (!this.isDraggingShape) return;
+            if (!Array.isArray(this.dragStartClipPathN) || this.dragStartClipPathN.length < 3) return;
+            if (!Array.isArray(this.dragStartPos) || this.dragStartPos.length < 2) return;
+            if (!Array.isArray(this.dragPendingPos) || this.dragPendingPos.length < 2) return;
+
+            const { w, h } = getOverlaySize();
+            const dx = this.dragPendingPos[0] - this.dragStartPos[0];
+            const dy = this.dragPendingPos[1] - this.dragStartPos[1];
+            let dxN = dx / w;
+            let dyN = dy / h;
+
+            // Clamp translation as a whole to avoid distorting the polygon.
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            let maxY = -Infinity;
+            for (const q of this.dragStartClipPathN) {
+              if (!Array.isArray(q) || q.length < 2) continue;
+              if (q[0] < minX) minX = q[0];
+              if (q[1] < minY) minY = q[1];
+              if (q[0] > maxX) maxX = q[0];
+              if (q[1] > maxY) maxY = q[1];
+            }
+            if ([minX, minY, maxX, maxY].every(Number.isFinite)) {
+              const minDx = -minX;
+              const maxDx = 1 - maxX;
+              const minDy = -minY;
+              const maxDy = 1 - maxY;
+              dxN = Math.max(minDx, Math.min(maxDx, dxN));
+              dyN = Math.max(minDy, Math.min(maxDy, dyN));
+            }
+
+            const nextClipN = this.dragStartClipPathN
+              .map((q) => [q[0] + dxN, q[1] + dyN])
+              .filter((q) => Array.isArray(q) && q.length === 2);
+
+            if (nextClipN.length < 3) return;
+
+            const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+            const layer = layers[this.dragLayerIndex];
+            if (!layer) return;
+
+            const nextKey = this.makeClipKey(nextClipN);
+            layer.clipPathN = nextClipN;
+            layer.clipKey = nextKey;
+
+            this.activeClipPathN = nextClipN.slice();
+            this.activeClipKey = nextKey;
+
+            this.canvasLayers.redrawAllLayers();
+            drawOverlayPath();
+          });
+        }
+
+        evt.preventDefault();
+        return;
+      }
+
+      if (this.isDrawing) {
+        if (this.drawPointerId !== evt.pointerId) return;
+
+        const last = this.drawPath[this.drawPath.length - 1];
+        const dx = p[0] - last[0];
+        const dy = p[1] - last[1];
+        if (Math.hypot(dx, dy) < minDist) return;
+
+        this.drawPath.push(p);
+        drawOverlayPath();
+        return;
+      }
+
+      // Hover cursor hint when a shape is selected.
+      const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
+      if (this.activeLayerIndex >= 0 && hasActiveClip) {
+        const { w, h } = getOverlaySize();
+        const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
+        overlay.style.cursor = pointInPolygon(p[0], p[1], polyPx) ? 'move' : 'crosshair';
+      } else {
+        overlay.style.cursor = 'crosshair';
+      }
     });
 
     const finish = (evt) => {
+      if (this.isCropping) {
+        if (this.cropPointerId !== evt.pointerId) return;
+        this.isCropping = false;
+        this.cropPointerId = null;
+
+        const start = this.cropStartPos;
+        const end = this.cropPendingPos;
+        this.cropStartPos = null;
+        this.cropPendingPos = null;
+
+        const { w, h } = getOverlaySize();
+
+        if (Array.isArray(start) && Array.isArray(end)) {
+          const x0 = Math.min(start[0], end[0]);
+          const y0 = Math.min(start[1], end[1]);
+          const x1 = Math.max(start[0], end[0]);
+          const y1 = Math.max(start[1], end[1]);
+          const rw = x1 - x0;
+          const rh = y1 - y0;
+          const minPx = 6;
+
+          if (rw >= minPx && rh >= minPx) {
+            this.cropRectN = {
+              x: clamp01(x0 / w),
+              y: clamp01(y0 / h),
+              w: clamp01(rw / w),
+              h: clamp01(rh / h),
+            };
+          }
+        }
+
+        this.cropRectPx = null;
+        this.toolMode = 'draw';
+        overlay.style.cursor = 'crosshair';
+        drawOverlayPath();
+        evt.preventDefault();
+        return;
+      }
+
+      if (this.isDraggingShape) {
+        if (this.dragPointerId !== evt.pointerId) return;
+        this.isDraggingShape = false;
+        this.dragPointerId = null;
+        this.dragLayerIndex = -1;
+        this.dragStartPos = null;
+        this.dragStartClipPathN = null;
+        this.dragPendingPos = null;
+        if (this.dragRaf) {
+          window.cancelAnimationFrame(this.dragRaf);
+          this.dragRaf = 0;
+        }
+        overlay.style.cursor = 'crosshair';
+        evt.preventDefault();
+        return;
+      }
+
       if (!this.isDrawing) return;
       if (this.drawPointerId !== evt.pointerId) return;
 
@@ -1325,8 +1947,6 @@
 
       const path = Array.isArray(this.drawPath) ? this.drawPath.slice() : [];
       this.drawPath = [];
-
-      if (!this.currentFile) return;
       if (path.length < 3) return;
 
       const rect = overlay.getBoundingClientRect();

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="nl">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-W9BVWPWJ');</script>
+<!-- End Google Tag Manager -->
+		<title>Patronen 2026</title>
+		<link rel="stylesheet" href="./styles/main.css" />
+	</head>
+	<body>
+        <!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-W9BVWPWJ"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+		<div id="app">
+			<header class="topbar" id="topbar">
+				<div class="topbar__inner">
+					<div class="brand">Patronen 2026</div>
+					<button
+						class="menu-toggle"
+						id="menuToggle"
+						type="button"
+						aria-expanded="false"
+						aria-controls="topnav"
+					>
+						Menu
+					</button>
+					<nav class="topnav" id="topnav">
+						<a href="#">Start</a>
+						<a href="#">Patronen</a>
+						<a href="#">Over</a>
+					</nav>
+				</div>
+			</header>
+
+			<div class="layout" id="layout">
+				<div class="edge-trigger edge-trigger--left" id="leftEdge" aria-label="Open linker paneel"></div>
+				<div class="edge-trigger edge-trigger--right" id="rightEdge" aria-label="Open rechter paneel"></div>
+
+				<aside class="panel panel--left" id="leftPanel">
+					<div class="panel__header">
+						<div class="panel__title">Links</div>
+						<button class="panel__close" id="leftClose" type="button" aria-label="Sluit linker paneel">×</button>
+					</div>
+					<div class="panel__body">
+						<div id="layersRoot" class="layers" aria-label="Lagen"></div>
+					</div>
+				</aside>
+
+				<main class="panel panel--center" id="centerPanel">
+					<div class="panel__body">
+						<canvas id="mainCanvas" aria-label="Canvas"></canvas>
+					</div>
+				</main>
+
+				<aside class="panel panel--right" id="rightPanel">
+					<div class="panel__header">
+						<div class="panel__title">Rechts</div>
+						<button class="panel__close" id="rightClose" type="button" aria-label="Sluit rechter paneel">×</button>
+					</div>
+					<div class="panel__body">
+						<label class="field" for="patternSelect">Patroon</label>
+						<select id="patternSelect" class="select"></select>
+						<div class="pattern-preview" id="patternPreview" role="img" aria-label="Patroon preview"></div>
+						<label class="field" for="patternRepeat">Tegels: <span id="patternRepeatValue">10</span></label>
+						<input id="patternRepeat" class="range" type="range" min="1" max="100" step="1" value="10" />
+						<label class="field">Kleur</label>
+						<div id="palette" class="palette" role="listbox" aria-label="Kleurenpalet"></div>
+						<label class="field" for="patternThickness">Lijndikte: <span id="patternThicknessValue">1</span></label>
+						<input id="patternThickness" class="range" type="range" min="1" max="100" step="1" value="1" />
+						<label class="toggle">
+							<input id="tileScaleToShape" type="checkbox" checked />
+							Tegels schalen op vorm
+						</label>
+					</div>
+				</aside>
+			</div>
+		</div>
+		<script src="./scripts/menu.js"></script>
+		<script src="./scripts/main.js"></script>
+	</body>
+</html>

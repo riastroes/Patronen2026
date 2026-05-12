@@ -1500,6 +1500,41 @@
       });
 
       this.preview.addEventListener('click', () => {
+        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+        const selected = this.getSelectedLayerIndices();
+
+        // If the user selected multiple layers (Shift+click), actions apply to the group.
+        // This takes precedence over "active shape" behavior.
+        if (selected.length > 1) {
+          if (!this.currentFile) {
+            this.applySolidToSelectedLayerOrCanvas();
+            return;
+          }
+
+          for (const idx of selected) {
+            this.canvasLayers.addPatternPaintToLayerIndex(
+              idx,
+              this.currentFile,
+              this.getRepeatCount(),
+              this.currentColor,
+              this.getThickness(),
+              this.currentTileScaleMode
+            );
+          }
+
+          this.renderLayersList();
+
+          const token = ++this.visibleColorsRenderToken;
+          Promise.all(selected.map((i) => this.canvasLayers.getLatestVisibleColorsPromise(i).catch(() => {})))
+            .then(() => {
+              if (token !== this.visibleColorsRenderToken) return;
+              this.renderLayersList();
+            })
+            .catch(() => {});
+
+          return;
+        }
+
         const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
         if (hasActive) {
           this.applyToActiveShape();
@@ -1511,8 +1546,6 @@
           return;
         }
 
-        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-        const selected = Array.from(this.selectedLayerIndices || []).filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length);
         if (selected.length > 0) {
           for (const idx of selected) {
             this.canvasLayers.addPatternPaintToLayerIndex(

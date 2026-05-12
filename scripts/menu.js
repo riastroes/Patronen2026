@@ -1680,25 +1680,77 @@
       const sw = Math.max(1, src.width);
       const sh = Math.max(1, src.height);
 
-      let sx = 0;
-      let sy = 0;
-      let sWidth = sw;
-      let sHeight = sh;
-
-      const cr = this.cropRectN;
-      if (cr && Number.isFinite(cr.x) && Number.isFinite(cr.y) && Number.isFinite(cr.w) && Number.isFinite(cr.h)) {
-        sx = Math.max(0, Math.min(sw - 1, Math.round(cr.x * sw)));
-        sy = Math.max(0, Math.min(sh - 1, Math.round(cr.y * sh)));
-        sWidth = Math.max(1, Math.min(sw - sx, Math.round(cr.w * sw)));
-        sHeight = Math.max(1, Math.min(sh - sy, Math.round(cr.h * sh)));
-      }
+      const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
 
       const out = document.createElement('canvas');
-      out.width = sWidth;
-      out.height = sHeight;
       const ctx = out.getContext('2d');
       if (!ctx) return;
-      ctx.drawImage(src, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+
+      if (hasActiveClip) {
+        // Export only the selected (clipped) part.
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const p of this.activeClipPathN) {
+          if (!Array.isArray(p) || p.length < 2) continue;
+          const xN = Math.max(0, Math.min(1, Number(p[0])));
+          const yN = Math.max(0, Math.min(1, Number(p[1])));
+          const x = xN * sw;
+          const y = yN * sh;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+
+        if (![minX, minY, maxX, maxY].every(Number.isFinite)) return;
+
+        const bx = Math.max(0, Math.min(sw - 1, Math.floor(minX)));
+        const by = Math.max(0, Math.min(sh - 1, Math.floor(minY)));
+        const ex = Math.max(bx + 1, Math.min(sw, Math.ceil(maxX)));
+        const ey = Math.max(by + 1, Math.min(sh, Math.ceil(maxY)));
+        const bw = Math.max(1, ex - bx);
+        const bh = Math.max(1, ey - by);
+
+        out.width = bw;
+        out.height = bh;
+
+        ctx.save();
+        ctx.translate(-bx, -by);
+        ctx.beginPath();
+        const pts = this.activeClipPathN;
+        ctx.moveTo(Math.max(0, Math.min(1, pts[0][0])) * sw, Math.max(0, Math.min(1, pts[0][1])) * sh);
+        for (let i = 1; i < pts.length; i++) {
+          const q = pts[i];
+          if (!Array.isArray(q) || q.length < 2) continue;
+          const x = Math.max(0, Math.min(1, Number(q[0]))) * sw;
+          const y = Math.max(0, Math.min(1, Number(q[1]))) * sh;
+          ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(src, 0, 0);
+        ctx.restore();
+      } else {
+        // Default export: crop-rect if present, otherwise full canvas.
+        let sx = 0;
+        let sy = 0;
+        let sWidth = sw;
+        let sHeight = sh;
+
+        const cr = this.cropRectN;
+        if (cr && Number.isFinite(cr.x) && Number.isFinite(cr.y) && Number.isFinite(cr.w) && Number.isFinite(cr.h)) {
+          sx = Math.max(0, Math.min(sw - 1, Math.round(cr.x * sw)));
+          sy = Math.max(0, Math.min(sh - 1, Math.round(cr.y * sh)));
+          sWidth = Math.max(1, Math.min(sw - sx, Math.round(cr.w * sw)));
+          sHeight = Math.max(1, Math.min(sh - sy, Math.round(cr.h * sh)));
+        }
+
+        out.width = sWidth;
+        out.height = sHeight;
+        ctx.drawImage(src, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+      }
 
       const fileName = 'patronen2026.png';
 
@@ -1708,8 +1760,8 @@
         const record = {
           id,
           createdAt: Date.now(),
-          w: sWidth,
-          h: sHeight,
+          w: out.width,
+          h: out.height,
           fileName,
           blob,
         };

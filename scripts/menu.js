@@ -1598,6 +1598,33 @@
         this.cropToolBtn.dataset.bound = '1';
         this.cropToolBtn.addEventListener('click', () => {
           this.toolMode = 'crop';
+
+          // Crop selection should override any active shape/image selection.
+          this.isDrawing = false;
+          this.drawPointerId = null;
+          this.drawPath = [];
+          this.activeClipPathN = null;
+          this.activeClipKey = null;
+          this.setActiveLayerIndex(-1);
+
+          this.isDraggingShape = false;
+          this.dragPointerId = null;
+          this.dragLayerIndex = -1;
+          this.dragStartPos = null;
+          this.dragStartClipPathN = null;
+          this.dragPendingPos = null;
+          if (this.dragRaf) {
+            window.cancelAnimationFrame(this.dragRaf);
+            this.dragRaf = 0;
+          }
+
+          this.isDraggingImage = false;
+          this.imagePointerId = null;
+          this.imageLayerIndex = -1;
+          this.imageDragMode = '';
+          this.imageStartPos = null;
+          this.imageStartPlacement = null;
+
           // Start a new crop selection; the last crop is still shown until replaced.
           this.isCropping = false;
           this.cropPointerId = null;
@@ -1605,6 +1632,9 @@
           this.cropPendingPos = null;
           this.cropRectPx = null;
           if (this.drawOverlay) this.drawOverlay.style.cursor = 'crosshair';
+
+          this.renderLayersList();
+          if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
         });
       }
 
@@ -1909,8 +1939,13 @@
     setActiveLayerIndex(nextIndex) {
       const n = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers.length : 0;
       if (!Number.isFinite(nextIndex)) return;
-      const idx = Math.max(0, Math.min(n - 1, Math.trunc(nextIndex)));
-      this.activeLayerIndex = n > 0 ? idx : -1;
+      const raw = Math.trunc(nextIndex);
+      if (raw < 0 || n <= 0) {
+        this.activeLayerIndex = -1;
+        return;
+      }
+      const idx = Math.max(0, Math.min(n - 1, raw));
+      this.activeLayerIndex = idx;
     }
 
     removeLayerIndex(layerIndex) {

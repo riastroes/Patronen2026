@@ -1422,6 +1422,9 @@
 
       this.activeLayerIndex = -1;
 
+      // Multi-select (Shift+click) support for layers.
+      this.selectedLayerIndices = new Set();
+
       this.visibleColorsRenderToken = 0;
 
       this.draggingLayerViewIndex = -1;
@@ -1525,6 +1528,7 @@
       this.cropRectN = null;
 
       this.activeLayerIndex = -1;
+      this.selectedLayerIndices = new Set();
 
       // Reset controls to defaults.
       this.setCurrentColor('#000000');
@@ -2165,16 +2169,59 @@
       if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
     }
 
+    setLayerSelectionSingle(layerIndex) {
+      const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+      if (idx < 0) {
+        this.selectedLayerIndices = new Set();
+        this.setActiveLayerIndex(-1);
+        this.syncActiveShapeToLayerIndex(-1);
+        return;
+      }
+
+      this.selectedLayerIndices = new Set([idx]);
+      this.setActiveLayerIndex(idx);
+      this.syncActiveShapeToLayerIndex(idx);
+    }
+
+    toggleLayerSelection(layerIndex) {
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      const n = layers.length;
+      const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+      if (idx < 0 || idx >= n) return;
+
+      const next = new Set(this.selectedLayerIndices);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+
+      this.selectedLayerIndices = next;
+
+      if (next.size === 0) {
+        this.setActiveLayerIndex(-1);
+        this.syncActiveShapeToLayerIndex(-1);
+        return;
+      }
+
+      // Make the toggled layer the primary active layer.
+      this.setActiveLayerIndex(idx);
+      this.syncActiveShapeToLayerIndex(idx);
+    }
+
     setActiveLayerIndex(nextIndex) {
       const n = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers.length : 0;
       if (!Number.isFinite(nextIndex)) return;
       const raw = Math.trunc(nextIndex);
       if (raw < 0 || n <= 0) {
         this.activeLayerIndex = -1;
+
+        // Keep multi-select state consistent.
+        this.selectedLayerIndices = new Set();
         return;
       }
       const idx = Math.max(0, Math.min(n - 1, raw));
       this.activeLayerIndex = idx;
+
+      // Programmatic selection defaults to single-select.
+      this.selectedLayerIndices = new Set([idx]);
     }
 
     removeLayerIndex(layerIndex) {
@@ -2200,6 +2247,9 @@
       else if (idx === nextActive) nextActive = Math.min(idx, nextN - 1);
       this.activeLayerIndex = Math.max(0, Math.min(nextN - 1, nextActive));
       this.syncActiveShapeToLayerIndex(this.activeLayerIndex);
+
+      // Keep selection consistent.
+      this.selectedLayerIndices = new Set([this.activeLayerIndex]);
       this.renderLayersList();
     }
 
@@ -2244,6 +2294,24 @@
     applySolidToSelectedLayerOrCanvas() {
       const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
 
+      const selected = Array.from(this.selectedLayerIndices || []).filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length);
+      if (selected.length > 0) {
+        for (const idx of selected) {
+          const layer = layers[idx];
+          const hasClip = layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+          if (hasClip) {
+            const clipPathN = layer.clipPathN;
+            const clipKey = typeof layer.clipKey === 'string' && layer.clipKey ? layer.clipKey : this.makeClipKey(clipPathN);
+            this.canvasLayers.addClippedSolidLayer(this.currentColor, clipPathN, clipKey);
+          } else {
+            this.canvasLayers.addSolidPaintToLayerIndex(idx, this.currentColor);
+          }
+        }
+
+        this.renderLayersList();
+        return;
+      }
+
       if (this.activeLayerIndex >= 0 && this.activeLayerIndex < layers.length) {
         const layer = layers[this.activeLayerIndex];
         const hasClip = layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
@@ -2285,7 +2353,7 @@
 	  this.clearLayerThumbObjectUrls();
 
       this.layersRoot.innerHTML = '';
-      const groupName = 'activeLayer';
+      const selectedSet = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
 
       // Newest layer first (top of list).
       for (let viewIndex = 0; viewIndex < layers.length; viewIndex++) {
@@ -2293,7 +2361,9 @@
         const layer = layers[i] || {};
 
         const item = document.createElement('label');
-        item.className = 'layers__item';
+        const isPrimary = i === this.activeLayerIndex;
+        const isSelected = selectedSet.has(i) || isPrimary;
+        item.className = 'layers__item' + (isSelected ? ' is-selected' : '') + (isPrimary ? ' is-primary' : '');
         item.draggable = true;
         item.dataset.viewIndex = String(viewIndex);
 
@@ -2301,14 +2371,15 @@
         left.className = 'layers__left';
 
         const radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = groupName;
+        radio.type = 'checkbox';
         radio.value = String(i);
-        radio.checked = i === this.activeLayerIndex;
+        radio.checked = isSelected;
         radio.draggable = false;
-        radio.addEventListener('change', () => {
-          this.activeLayerIndex = i;
-          this.syncActiveShapeToLayerIndex(i);
+        radio.addEventListener('click', (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          if (evt.shiftKey) this.toggleLayerSelection(i);
+          else this.setLayerSelectionSingle(i);
           this.renderLayersList();
         });
 
@@ -2318,6 +2389,15 @@
 
         left.appendChild(radio);
         left.appendChild(num);
+
+        // Click on the row selects; Shift+click multi-selects.
+        item.addEventListener('click', (evt) => {
+          const target = evt.target instanceof HTMLElement ? evt.target : null;
+          if (target && (target.closest('button') || target.closest('input') || target.closest('select'))) return;
+          if (evt.shiftKey) this.toggleLayerSelection(i);
+          else this.setLayerSelectionSingle(i);
+          this.renderLayersList();
+        });
 
         const swatches = document.createElement('span');
         swatches.className = 'layers__swatches';
@@ -2368,6 +2448,15 @@
               evt.preventDefault();
               evt.stopPropagation();
               if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
+
+              const layers2 = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+              const sel = Array.from(this.selectedLayerIndices || []).filter((x) => Number.isFinite(x) && x >= 0 && x < layers2.length);
+              const applyGroup = sel.length > 1 && (this.selectedLayerIndices instanceof Set) && this.selectedLayerIndices.has(i);
+              if (applyGroup) {
+                for (const li of sel) this.removeColorFromLayerIndex(li, c);
+                return;
+              }
+
               this.removeColorFromLayerIndex(i, c);
             });
             swatches.appendChild(s);
@@ -2388,6 +2477,34 @@
           evt.preventDefault();
           evt.stopPropagation();
           if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
+
+          const layers2 = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+          const sel = Array.from(this.selectedLayerIndices || []).filter((x) => Number.isFinite(x) && x >= 0 && x < layers2.length);
+          const applyGroup = sel.length > 1 && (this.selectedLayerIndices instanceof Set) && this.selectedLayerIndices.has(i);
+          if (applyGroup) {
+            // Remove from highest index to lowest to avoid index shifts.
+            sel.sort((a, b) => b - a);
+            for (const li of sel) {
+              this.canvasLayers.removeLayerAt(li);
+            }
+
+            const nextN = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers.length : 0;
+            if (nextN <= 0) {
+              this.activeLayerIndex = -1;
+              this.activeClipPathN = null;
+              this.activeClipKey = null;
+              this.selectedLayerIndices = new Set();
+              if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+              this.renderLayersList();
+              return;
+            }
+
+            this.setActiveLayerIndex(Math.min(this.activeLayerIndex, nextN - 1));
+            this.syncActiveShapeToLayerIndex(this.activeLayerIndex);
+            this.renderLayersList();
+            return;
+          }
+
           this.removeLayerIndex(i);
         });
 
@@ -2763,8 +2880,7 @@
     if (this.toolMode !== 'crop') {
     const hitIdx = hitTestTopmostImageLayer(p[0], p[1]);
     if (hitIdx >= 0) {
-      this.activeLayerIndex = hitIdx;
-      this.syncActiveShapeToLayerIndex(hitIdx);
+      this.setLayerSelectionSingle(hitIdx);
       this.renderLayersList();
       drawOverlayPath();
 

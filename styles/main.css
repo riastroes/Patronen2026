@@ -343,6 +343,15 @@ body.right-collapsed #rightPanel {
   background: white;
 }
 
+.layers__item.is-selected {
+  outline: 2px solid rgba(0, 0, 0, 0.22);
+  outline-offset: 2px;
+}
+
+.layers__item.is-primary {
+  background: rgba(0, 0, 0, 0.03);
+}
+
 .layers__item[draggable="true"] {
   cursor: grab;
 }

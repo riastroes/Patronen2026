@@ -1322,6 +1322,45 @@
       return true;
     }
 
+    addPatternPaintToLayerIndex(layerIndex, file, repeatCount, color, thickness, tileScaleMode) {
+      const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+      const layer = this.layers && this.layers[idx];
+      if (!layer) return false;
+
+      const f = typeof file === 'string' ? file.trim() : '';
+      if (!f) return false;
+
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+      const mode = tileScaleMode === 'shape' ? 'shape' : 'canvas';
+
+      if (!Array.isArray(layer.paints)) layer.paints = [];
+      layer.paints.push({ file: f, repeatCount, color: c, thickness, tileScaleMode: mode });
+
+      const clipPathN = Array.isArray(layer.clipPathN) ? layer.clipPathN : null;
+      if (clipPathN) this.addOptimisticVisibleColor(layer, c);
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+
+        const needsFullRedraw = idx >= 0 && idx < this.layers.length - 1;
+        if (needsFullRedraw) {
+          this.redrawAllLayers();
+          return;
+        }
+
+        this.drawQueue = this.drawQueue
+          .then(() => this.loadPatternVariantImage(f, c, thickness))
+          .then((img) => {
+            this.drawLayer(img, repeatCount, clipPathN, mode);
+          })
+          .catch(() => {});
+      }, 0);
+
+      if (clipPathN) this.scheduleVisibleColorsCompute(idx);
+      return true;
+    }
+
     hasLayers() {
       return this.layers.length > 0;
     }
@@ -1466,6 +1505,34 @@
 
         if (!this.currentFile) {
           this.applySolidToSelectedLayerOrCanvas();
+          return;
+        }
+
+        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+        const selected = Array.from(this.selectedLayerIndices || []).filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length);
+        if (selected.length > 0) {
+          for (const idx of selected) {
+            this.canvasLayers.addPatternPaintToLayerIndex(
+              idx,
+              this.currentFile,
+              this.getRepeatCount(),
+              this.currentColor,
+              this.getThickness(),
+              this.currentTileScaleMode
+            );
+          }
+
+          this.renderLayersList();
+
+          // Re-render once async visible-colors computations finish.
+          const token = ++this.visibleColorsRenderToken;
+          Promise.all(selected.map((i) => this.canvasLayers.getLatestVisibleColorsPromise(i).catch(() => {})))
+            .then(() => {
+              if (token !== this.visibleColorsRenderToken) return;
+              this.renderLayersList();
+            })
+            .catch(() => {});
+
           return;
         }
 

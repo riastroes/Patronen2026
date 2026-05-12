@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 100 100">
+  <!-- Always-filled square.
+       Rendered as a square-capped micro-segment: its square size equals stroke-width.
+       The app rewrites stroke color/width (lijndikte). -->
+  <path d="M 50 50 L 50.01 50" fill="none" stroke="#000000" stroke-width="2" stroke-linecap="square" />
+</svg>

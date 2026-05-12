@@ -245,6 +245,24 @@ body.right-collapsed #rightPanel {
   margin: 0;
 }
 
+.saved-images {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.saved-images__item {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.35);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+  cursor: pointer;
+}
+
 .layers {
   display: flex;
   flex-direction: column;
@@ -311,6 +329,17 @@ body.right-collapsed #rightPanel {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.layers__thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.35);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
 }
 
 .layers__right {

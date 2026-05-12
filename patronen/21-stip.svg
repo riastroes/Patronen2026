@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 100 100">
   <!-- Always-filled dot.
        The app rewrites stroke color/width (lijndikte).
        The dot is a round-capped micro-segment: its diameter equals stroke-width. -->
-  <path d="M 100 100 L 100.01 100" fill="none" stroke="#000000" stroke-width="2" stroke-linecap="round" />
+  <path d="M 50 50 L 50.01 50" fill="none" stroke="#000000" stroke-width="2" stroke-linecap="round" />
 </svg>

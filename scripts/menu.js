@@ -8,9 +8,10 @@
   }
 
   class MenuController {
-    constructor() {
+    constructor(options) {
       this.toggle = qs('menuToggle');
       this.nav = qs('topnav');
+      this.onRightViewSelect = options && typeof options.onRightViewSelect === 'function' ? options.onRightViewSelect : null;
     }
 
     init() {
@@ -30,11 +31,88 @@
         if (!(target instanceof HTMLElement)) return;
         if (target.tagName !== 'A') return;
 
+        const view = target.dataset ? target.dataset.rightView : '';
+        if (view && this.onRightViewSelect) {
+          event.preventDefault();
+          this.onRightViewSelect(view);
+        }
+
         if (window.matchMedia('(max-width: 700px)').matches) {
           document.body.classList.remove('menu-open');
           this.toggle.setAttribute('aria-expanded', 'false');
         }
       });
+    }
+  }
+
+  class SavedImagesDB {
+    constructor() {
+      this.dbName = 'Patronen2026';
+      this.storeName = 'savedImages';
+      this.version = 1;
+      this.dbPromise = null;
+    }
+
+    open() {
+      if (this.dbPromise) return this.dbPromise;
+      this.dbPromise = new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) {
+          reject(new Error('IndexedDB not available'));
+          return;
+        }
+
+        const req = indexedDB.open(this.dbName, this.version);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(this.storeName)) {
+            db.createObjectStore(this.storeName, { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+      });
+      return this.dbPromise;
+    }
+
+    put(record) {
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readwrite');
+            const store = tx.objectStore(this.storeName);
+            store.put(record);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+          })
+      );
+    }
+
+    getAll() {
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readonly');
+            const store = tx.objectStore(this.storeName);
+            const req = store.getAll();
+            req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+            req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+          })
+      );
+    }
+
+    get(id) {
+      const key = typeof id === 'string' ? id : '';
+      if (!key) return Promise.resolve(null);
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readonly');
+            const store = tx.objectStore(this.storeName);
+            const req = store.get(key);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+          })
+      );
     }
   }
 
@@ -86,6 +164,7 @@
       this.imageCache = new Map();
 	  this.svgTextCache = new Map();
 	  this.variantCache = new Map();
+	  this.savedImageCache = new Map();
       this.drawQueue = Promise.resolve();
 
       this.computeQueue = Promise.resolve();
@@ -617,7 +696,7 @@
   buildSvgVariant(svgText, color, thickness) {
     const safeColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
     const t = Number.isFinite(thickness) ? Math.round(thickness) : 1;
-    const clamped = Math.max(1, Math.min(200, t));
+    const clamped = Math.max(1, Math.min(100, t));
 
     const parser = new DOMParser();
     const doc = parser.parseFromString(svgText, 'image/svg+xml');
@@ -650,8 +729,7 @@
     const safeColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
     const t = Number.isFinite(thickness) ? Math.round(thickness) : 1;
     const clamped = Math.max(1, Math.min(100, t));
-    const effective = file === '21-stip.svg' ? Math.min(200, clamped * 2) : clamped;
-    const key = `${file}|${safeColor}|${effective}`;
+    const key = `${file}|${safeColor}|${clamped}`;
 
     const cached = this.variantCache.get(key);
     if (cached?.img?.complete) return Promise.resolve(cached.img);
@@ -659,7 +737,7 @@
 
     const img = new Image();
     const promise = this.loadSvgText(file)
-      .then((svgText) => this.buildSvgVariant(svgText, safeColor, effective))
+      .then((svgText) => this.buildSvgVariant(svgText, safeColor, clamped))
       .then((variantText) =>
         new Promise((resolve, reject) => {
           img.onload = () => resolve(img);
@@ -739,6 +817,56 @@
       c.ctx.restore();
     }
 
+    loadSavedImageFromBlob(id, blob) {
+      const key = typeof id === 'string' && id ? id : `blob:${Math.random().toString(16).slice(2)}`;
+      if (!(blob instanceof Blob)) return Promise.reject(new Error('Invalid image blob'));
+
+      const cached = this.savedImageCache.get(key);
+      if (cached?.img?.complete) return Promise.resolve(cached.img);
+      if (cached?.promise) return cached.promise;
+
+      const img = new Image();
+      const promise = new Promise((resolve, reject) => {
+        const blobUrl = URL.createObjectURL(blob);
+        img.onload = () => {
+          URL.revokeObjectURL(blobUrl);
+          resolve(img);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(blobUrl);
+          reject(new Error('Failed to load saved image'));
+        };
+        img.src = blobUrl;
+      });
+
+      this.savedImageCache.set(key, { img, promise });
+      return promise;
+    }
+
+    drawPlacedImageToCtx(ctx, w, h, img, placement) {
+      if (!ctx || !img || !placement) return;
+      const xN = Number.isFinite(placement.xN) ? placement.xN : 0;
+      const yN = Number.isFinite(placement.yN) ? placement.yN : 0;
+      const wN = Number.isFinite(placement.wN) ? placement.wN : 0.25;
+      const hN = Number.isFinite(placement.hN) ? placement.hN : 0.25;
+
+      const x = xN * w;
+      const y = yN * h;
+      const dw = Math.max(1, wN * w);
+      const dh = Math.max(1, hN * h);
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      const prevSmoothing = ctx.imageSmoothingEnabled;
+      const prevQuality = ctx.imageSmoothingQuality;
+      ctx.imageSmoothingEnabled = true;
+      if (typeof prevQuality === 'string') ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, x, y, dw, dh);
+      ctx.imageSmoothingEnabled = prevSmoothing;
+      if (typeof prevQuality === 'string') ctx.imageSmoothingQuality = prevQuality;
+      ctx.restore();
+    }
+
     drawSolidLayer(color, clipPathN) {
       const c = this.getContext();
       if (!c) return;
@@ -781,6 +909,30 @@
 
         for (const paint of paints) {
           const kind = paint?.kind;
+          if (kind === 'image' && paint?.blob instanceof Blob) {
+            const imageId = typeof paint?.imageId === 'string' ? paint.imageId : '';
+            const blob = paint.blob;
+            const placement = {
+              xN: paint.xN,
+              yN: paint.yN,
+              wN: paint.wN,
+              hN: paint.hN,
+            };
+
+            this.drawQueue = this.drawQueue
+              .then(() => this.loadSavedImageFromBlob(imageId, blob))
+              .then((img) => {
+                this.resizeToCSSPixels();
+                const c2 = this.getContext();
+                if (!c2) return;
+                const rect2 = c2.canvas.getBoundingClientRect();
+                const w2 = Math.max(1, rect2.width);
+                const h2 = Math.max(1, rect2.height);
+                this.drawPlacedImageToCtx(c2.ctx, w2, h2, img, placement);
+              })
+              .catch(() => {});
+            continue;
+          }
           if (kind === 'solid' || !paint?.file) {
             const color = paint?.color;
             this.drawQueue = this.drawQueue
@@ -829,6 +981,54 @@
           })
           .catch(() => {});
       }, 0);
+    }
+
+    addImageLayer(imageId, blob, xN, yN, wN, hN) {
+      const id = typeof imageId === 'string' ? imageId : '';
+      const placement = {
+        xN: Number.isFinite(xN) ? xN : 0,
+        yN: Number.isFinite(yN) ? yN : 0,
+        wN: Number.isFinite(wN) ? wN : 0.25,
+        hN: Number.isFinite(hN) ? hN : 0.25,
+      };
+
+      this.layers.push({
+        clipPathN: null,
+        clipKey: null,
+        paints: [
+          {
+            kind: 'image',
+            imageId: id,
+            blob,
+            xN: placement.xN,
+            yN: placement.yN,
+            wN: placement.wN,
+            hN: placement.hN,
+          },
+        ],
+      });
+
+      const layerIndex = this.layers.length - 1;
+      if (this.layers.length === 1) this.resizeToCSSPixels();
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+        this.drawQueue = this.drawQueue
+          .then(() => this.loadSavedImageFromBlob(id, blob))
+          .then((img) => {
+            this.resizeToCSSPixels();
+            const c = this.getContext();
+            if (!c) return;
+            const rect = c.canvas.getBoundingClientRect();
+            const w = Math.max(1, rect.width);
+            const h = Math.max(1, rect.height);
+            this.drawPlacedImageToCtx(c.ctx, w, h, img, placement);
+          })
+          .catch(() => {});
+      }, 0);
+
+      return layerIndex;
     }
 
     addClippedLayer(file, repeatCount, color, thickness, clipPathN, tileScaleMode, clipKey) {
@@ -1008,6 +1208,9 @@
     constructor() {
       this.select = qs('patternSelect');
       this.preview = qs('patternPreview');
+      this.rightViewPatterns = qs('rightViewPatterns');
+      this.rightViewImages = qs('rightViewImages');
+      this.savedImagesRoot = qs('savedImages');
       this.canvas = qs('mainCanvas');
       this.layersRoot = qs('layersRoot');
 	  this.cropToolBtn = qs('cropToolBtn');
@@ -1018,6 +1221,11 @@
 	  this.thickness = qs('patternThickness');
 	  this.thicknessValue = qs('patternThicknessValue');
       this.tileScaleToShape = qs('tileScaleToShape');
+
+    this.rightView = 'patterns';
+    this.savedImagesDB = new SavedImagesDB();
+    this.savedImagesObjectUrls = [];
+	  this.layerThumbObjectUrls = [];
 
       this.patterns = [
         { label: 'Geen', file: '' },
@@ -1042,6 +1250,7 @@
         { label: '20 Boog op kop (1 lijn)', file: '20-boog-op-kop.svg' },
         { label: '17 Cirkel (1 lijn)', file: '17-cirkel.svg' },
         { label: '21 Stip (1 punt)', file: '21-stip.svg' },
+        { label: '22 Vierkantje (1 vlak)', file: '22-vierkantje.svg' },
         { label: '18 Sinus (1 lijn)', file: '18-sinus.svg' },
         { label: '19 Spiraal (1 lijn)', file: '19-spiraal.svg' },
       ];
@@ -1069,6 +1278,13 @@
       this.dragRaf = 0;
       this.dragPendingPos = null;
 
+	  this.isDraggingImage = false;
+	  this.imagePointerId = null;
+	  this.imageLayerIndex = -1;
+	  this.imageDragMode = ''; // 'move' | 'resize'
+	  this.imageStartPos = null;
+	  this.imageStartPlacement = null; // {xN,yN,wN,hN}
+
       this.toolMode = 'draw';
       this.isCropping = false;
       this.cropPointerId = null;
@@ -1083,6 +1299,8 @@
 
       this.draggingLayerViewIndex = -1;
       this.dragOverItem = null;
+
+      this.previewToken = 0;
     }
 
     init() {
@@ -1130,11 +1348,99 @@
 
       this.renderLayersList();
 
+      this.setRightView(this.rightView);
+
       window.addEventListener('resize', () => {
         this.resizeDrawOverlay();
         if (!this.canvasLayers.hasLayers()) return;
         this.canvasLayers.redrawAllLayers();
       });
+    }
+
+    setRightView(view) {
+      const next = view === 'images' ? 'images' : 'patterns';
+      this.rightView = next;
+
+      if (this.rightViewPatterns instanceof HTMLElement) {
+        this.rightViewPatterns.hidden = next !== 'patterns';
+      }
+      if (this.rightViewImages instanceof HTMLElement) {
+        this.rightViewImages.hidden = next !== 'images';
+      }
+
+      // Ensure the right panel is visible.
+      document.body.classList.remove('right-collapsed');
+
+      if (next === 'images') this.renderSavedImages();
+    }
+
+    clearSavedImagesObjectUrls() {
+      for (const u of this.savedImagesObjectUrls) {
+        try {
+          URL.revokeObjectURL(u);
+        } catch (_) {}
+      }
+      this.savedImagesObjectUrls = [];
+    }
+
+    clearLayerThumbObjectUrls() {
+      for (const u of this.layerThumbObjectUrls) {
+        try {
+          URL.revokeObjectURL(u);
+        } catch (_) {}
+      }
+      this.layerThumbObjectUrls = [];
+    }
+
+    renderSavedImages() {
+      if (!(this.savedImagesRoot instanceof HTMLElement)) return;
+
+      this.clearSavedImagesObjectUrls();
+      this.savedImagesRoot.innerHTML = '';
+
+      this.savedImagesDB
+        .getAll()
+        .then((items) => {
+          const sorted = items
+            .filter((it) => it && typeof it.id === 'string' && it.blob instanceof Blob)
+            .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+
+          if (sorted.length === 0) {
+            this.savedImagesRoot.textContent = 'Nog geen opgeslagen afbeeldingen.';
+            return;
+          }
+
+          for (const it of sorted) {
+            const url = URL.createObjectURL(it.blob);
+            this.savedImagesObjectUrls.push(url);
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'saved-images__item';
+            btn.style.backgroundImage = `url("${url}")`;
+            btn.setAttribute('aria-label', 'Opgeslagen afbeelding');
+			btn.draggable = true;
+			btn.dataset.imageId = it.id;
+			btn.addEventListener('dragstart', (evt) => {
+				if (!evt.dataTransfer) return;
+				evt.dataTransfer.effectAllowed = 'copy';
+				evt.dataTransfer.setData('application/x-patronen2026-image', String(it.id));
+				evt.dataTransfer.setData('text/plain', String(it.id));
+			});
+            btn.addEventListener('click', () => {
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = it.fileName || 'patronen2026.png';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+            });
+            this.savedImagesRoot.appendChild(btn);
+          }
+        })
+        .catch(() => {
+          this.savedImagesRoot.textContent = 'Kan opgeslagen afbeeldingen niet laden.';
+        });
     }
 
     initImageActions() {
@@ -1284,10 +1590,51 @@
       if (!ctx) return;
       ctx.drawImage(src, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
 
-      const url = out.toDataURL('image/png');
+      const fileName = 'patronen2026.png';
+
+      const saveBlob = (blob) => {
+        if (!(blob instanceof Blob)) return;
+        const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const record = {
+          id,
+          createdAt: Date.now(),
+          w: sWidth,
+          h: sHeight,
+          fileName,
+          blob,
+        };
+
+        this.savedImagesDB.put(record).catch(() => {});
+
+        // If the images view is open, refresh it.
+        if (this.rightView === 'images') this.renderSavedImages();
+      };
+
+      if (typeof out.toBlob === 'function') {
+        out.toBlob((blob) => {
+          if (!(blob instanceof Blob)) return;
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.setTimeout(() => {
+            try {
+              URL.revokeObjectURL(url);
+            } catch (_) {}
+          }, 0);
+          saveBlob(blob);
+        }, 'image/png');
+        return;
+      }
+
+      // Fallback for older browsers.
+      const dataUrl = out.toDataURL('image/png');
       const a = document.createElement('a');
-      a.href = url;
-      a.download = 'patronen2026.png';
+      a.href = dataUrl;
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1469,6 +1816,7 @@
     renderLayersList() {
       if (!(this.layersRoot instanceof HTMLElement)) return;
       const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+	  this.clearLayerThumbObjectUrls();
 
       this.layersRoot.innerHTML = '';
       const groupName = 'activeLayer';
@@ -1508,6 +1856,18 @@
         const swatches = document.createElement('span');
         swatches.className = 'layers__swatches';
 
+        const paintsForType = Array.isArray(layer.paints) && layer.paints.length ? layer.paints : [];
+        const imagePaint = paintsForType.find((p) => p && p.kind === 'image' && p.blob instanceof Blob);
+        if (imagePaint) {
+          const blob = imagePaint.blob;
+          const url = URL.createObjectURL(blob);
+          this.layerThumbObjectUrls.push(url);
+          const thumb = document.createElement('span');
+          thumb.className = 'layers__thumb';
+          thumb.style.backgroundImage = `url(\"${url}\")`;
+          swatches.appendChild(thumb);
+        } else {
+
         const colors = [];
         const seen = new Set();
 
@@ -1530,21 +1890,22 @@
           }
         }
 
-        for (const c of colors) {
-          const s = document.createElement('button');
-          s.type = 'button';
-          s.className = 'layers__swatch';
-          s.style.backgroundColor = c;
-          s.title = 'Verwijder kleur uit layer';
-          s.setAttribute('aria-label', `Verwijder kleur ${c} uit layer`);
-          s.draggable = false;
-          s.addEventListener('click', (evt) => {
-            evt.preventDefault();
-            evt.stopPropagation();
-            if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
-            this.removeColorFromLayerIndex(i, c);
-          });
-          swatches.appendChild(s);
+          for (const c of colors) {
+            const s = document.createElement('button');
+            s.type = 'button';
+            s.className = 'layers__swatch';
+            s.style.backgroundColor = c;
+            s.title = 'Verwijder kleur uit layer';
+            s.setAttribute('aria-label', `Verwijder kleur ${c} uit layer`);
+            s.draggable = false;
+            s.addEventListener('click', (evt) => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
+              this.removeColorFromLayerIndex(i, c);
+            });
+            swatches.appendChild(s);
+          }
         }
 
         const right = document.createElement('span');
@@ -1609,6 +1970,90 @@
     this.drawOverlay = overlay;
     this.drawOverlayCtx = overlay.getContext('2d');
 
+    // Allow dropping saved images onto the canvas.
+    overlay.addEventListener('dragover', (evt) => {
+      evt.preventDefault();
+      if (evt.dataTransfer) evt.dataTransfer.dropEffect = 'copy';
+    });
+
+    overlay.addEventListener('drop', (evt) => {
+      evt.preventDefault();
+      const dt = evt.dataTransfer;
+      if (!dt) return;
+
+      const imageId = dt.getData('application/x-patronen2026-image') || dt.getData('text/plain');
+      const id = typeof imageId === 'string' ? imageId.trim() : '';
+      if (!id) return;
+
+      const rect = overlay.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      const x = evt.clientX - rect.left;
+      const y = evt.clientY - rect.top;
+      const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+      // Place centered around the drop point.
+      const defaultW = 0.28;
+      const defaultH = 0.28;
+      let xN = clamp01(x / w - defaultW / 2);
+      let yN = clamp01(y / h - defaultH / 2);
+
+      // Keep fully on-canvas.
+      xN = Math.max(0, Math.min(1 - defaultW, xN));
+      yN = Math.max(0, Math.min(1 - defaultH, yN));
+
+      this.savedImagesDB
+        .get(id)
+        .then((rec) => {
+          if (!rec || !(rec.blob instanceof Blob)) return;
+          const idx = this.canvasLayers.addImageLayer(id, rec.blob, xN, yN, defaultW, defaultH);
+          this.setActiveLayerIndex(idx);
+          this.syncActiveShapeToLayerIndex(idx);
+          this.renderLayersList();
+        })
+        .catch(() => {});
+    });
+
+    // Wheel scaling for selected image layers.
+    overlay.addEventListener('wheel', (evt) => {
+      const idx = this.activeLayerIndex;
+      if (!(Number.isFinite(idx) && idx >= 0)) return;
+      const paint = getImagePaintForLayerIndex(idx);
+      if (!paint) return;
+
+      evt.preventDefault();
+
+      const xN = Number.isFinite(paint.xN) ? paint.xN : 0;
+      const yN = Number.isFinite(paint.yN) ? paint.yN : 0;
+      const wN = Number.isFinite(paint.wN) ? paint.wN : 0.25;
+      const hN = Number.isFinite(paint.hN) ? paint.hN : 0.25;
+      const minN = 0.03;
+
+      const cx = xN + wN / 2;
+      const cy = yN + hN / 2;
+      const aspect = hN > 0.0001 ? wN / hN : 1;
+
+      const dir = evt.deltaY > 0 ? -1 : 1;
+      const factor = dir > 0 ? 1.08 : 1 / 1.08;
+      let nextW = wN * factor;
+      nextW = Math.max(minN, Math.min(1, nextW));
+      let nextH = aspect > 0.0001 ? nextW / aspect : nextW;
+      nextH = Math.max(minN, Math.min(1, nextH));
+
+      let nextX = cx - nextW / 2;
+      let nextY = cy - nextH / 2;
+      nextX = Math.max(0, Math.min(1 - nextW, nextX));
+      nextY = Math.max(0, Math.min(1 - nextH, nextY));
+
+      paint.xN = clamp01(nextX);
+      paint.yN = clamp01(nextY);
+      paint.wN = clamp01(nextW);
+      paint.hN = clamp01(nextH);
+
+      this.canvasLayers.redrawAllLayers();
+      drawOverlayPath();
+    }, { passive: false });
+
     const getPos = (evt) => {
       const rect = overlay.getBoundingClientRect();
       return [evt.clientX - rect.left, evt.clientY - rect.top];
@@ -1623,6 +2068,59 @@
     };
 
     const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+  const getImagePaintForLayerIndex = (layerIndex) => {
+    const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+    const layer = layers[layerIndex];
+    if (!layer) return null;
+    const paints = Array.isArray(layer.paints) ? layer.paints : [];
+    return paints.find((p) => p && p.kind === 'image' && p.blob instanceof Blob) || null;
+  };
+
+  const getImageRectPxForLayerIndex = (layerIndex) => {
+    const paint = getImagePaintForLayerIndex(layerIndex);
+    if (!paint) return null;
+    const { w, h } = getOverlaySize();
+    const xN = Number.isFinite(paint.xN) ? paint.xN : 0;
+    const yN = Number.isFinite(paint.yN) ? paint.yN : 0;
+    const wN = Number.isFinite(paint.wN) ? paint.wN : 0.25;
+    const hN = Number.isFinite(paint.hN) ? paint.hN : 0.25;
+    return {
+      x: xN * w,
+      y: yN * h,
+      w: wN * w,
+      h: hN * h,
+      xN,
+      yN,
+      wN,
+      hN,
+    };
+  };
+
+  const hitTestTopmostImageLayer = (px, py) => {
+    const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+    const { w, h } = getOverlaySize();
+    if (w <= 0 || h <= 0) return -1;
+
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const rect = getImageRectPxForLayerIndex(i);
+      if (!rect) continue;
+      const inside = px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
+      const onHandle = !!getImageHandleAtPoint(rect, px, py);
+      if (inside || onHandle) return i;
+    }
+    return -1;
+  };
+
+  const getImageHandleAtPoint = (rect, px, py) => {
+    if (!rect) return '';
+    const hx = rect.x + rect.w;
+    const hy = rect.y + rect.h;
+    const r = 18;
+    const dx = px - hx;
+    const dy = py - hy;
+    return Math.hypot(dx, dy) <= r ? 'se' : '';
+  };
 
     const pointInPolygon = (x, y, poly) => {
       if (!Array.isArray(poly) || poly.length < 3) return false;
@@ -1684,6 +2182,30 @@
         ctx.restore();
       }
 
+    // Image selection outline (if active layer is an image-layer)
+    if (this.activeLayerIndex >= 0) {
+      const rect = getImageRectPxForLayerIndex(this.activeLayerIndex);
+      if (rect && rect.w > 2 && rect.h > 2) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = '#000000';
+        ctx.globalAlpha = 0.85;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+        // bottom-right handle
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(rect.x + rect.w - 6, rect.y + rect.h - 6, 12, 12);
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(rect.x + rect.w - 6, rect.y + rect.h - 6, 12, 12);
+        ctx.restore();
+      }
+    }
+
       // Crop rectangle preview (if any)
       const rectPx = this.cropRectPx;
       const rectN = this.cropRectN;
@@ -1724,6 +2246,33 @@
       if (evt.button !== 0) return;
 
       const p = getPos(evt);
+
+    // Click-to-select image layer (topmost hit), and start move/resize.
+    if (this.toolMode !== 'crop') {
+    const hitIdx = hitTestTopmostImageLayer(p[0], p[1]);
+    if (hitIdx >= 0) {
+      this.activeLayerIndex = hitIdx;
+      this.syncActiveShapeToLayerIndex(hitIdx);
+      this.renderLayersList();
+      drawOverlayPath();
+
+      const rect = getImageRectPxForLayerIndex(hitIdx);
+      const handle = getImageHandleAtPoint(rect, p[0], p[1]);
+      this.isDraggingImage = true;
+      this.imagePointerId = evt.pointerId;
+      this.imageLayerIndex = hitIdx;
+      this.imageDragMode = handle ? 'resize' : 'move';
+      this.imageStartPos = p;
+      this.imageStartPlacement = rect
+        ? { xN: rect.xN, yN: rect.yN, wN: rect.wN, hN: rect.hN }
+        : { xN: 0, yN: 0, wN: 0.25, hN: 0.25 };
+
+      overlay.setPointerCapture(evt.pointerId);
+      overlay.style.cursor = this.imageDragMode === 'resize' ? 'nwse-resize' : 'grabbing';
+      evt.preventDefault();
+      return;
+    }
+    }
 
       if (this.toolMode === 'crop') {
         this.isCropping = true;
@@ -1858,6 +2407,56 @@
         return;
       }
 
+    if (this.isDraggingImage) {
+    if (this.imagePointerId !== evt.pointerId) return;
+    if (!Array.isArray(this.imageStartPos) || this.imageStartPos.length < 2) return;
+    if (!this.imageStartPlacement) return;
+    const idx = this.imageLayerIndex;
+    if (idx < 0) return;
+
+    const paint = getImagePaintForLayerIndex(idx);
+    if (!paint) return;
+
+    const { w, h } = getOverlaySize();
+    const dx = p[0] - this.imageStartPos[0];
+    const dy = p[1] - this.imageStartPos[1];
+    let xN = this.imageStartPlacement.xN;
+    let yN = this.imageStartPlacement.yN;
+    let wN = this.imageStartPlacement.wN;
+    let hN = this.imageStartPlacement.hN;
+
+    if (this.imageDragMode === 'move') {
+      xN = xN + dx / w;
+      yN = yN + dy / h;
+      xN = Math.max(0, Math.min(1 - wN, xN));
+      yN = Math.max(0, Math.min(1 - hN, yN));
+    } else if (this.imageDragMode === 'resize') {
+      const minN = 0.03;
+      const aspect = hN > 0.0001 ? wN / hN : 1;
+      const delta = Math.abs(dx / w) > Math.abs(dy / h) ? dx / w : dy / h;
+      let nextW = wN + delta;
+      nextW = Math.max(minN, Math.min(1, nextW));
+      let nextH = aspect > 0.0001 ? nextW / aspect : nextW;
+      nextH = Math.max(minN, Math.min(1, nextH));
+      // keep top-left fixed; clamp within canvas
+      if (xN + nextW > 1) nextW = Math.max(minN, 1 - xN);
+      if (aspect > 0.0001) nextH = Math.max(minN, nextW / aspect);
+      if (yN + nextH > 1) nextH = Math.max(minN, 1 - yN);
+      wN = nextW;
+      hN = nextH;
+    }
+
+    paint.xN = clamp01(xN);
+    paint.yN = clamp01(yN);
+    paint.wN = clamp01(wN);
+    paint.hN = clamp01(hN);
+
+    this.canvasLayers.redrawAllLayers();
+    drawOverlayPath();
+    evt.preventDefault();
+    return;
+    }
+
       if (this.isDrawing) {
         if (this.drawPointerId !== evt.pointerId) return;
 
@@ -1873,6 +2472,16 @@
 
       // Hover cursor hint when a shape is selected.
       const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
+      if (this.activeLayerIndex >= 0) {
+		const imgRect = getImageRectPxForLayerIndex(this.activeLayerIndex);
+		if (imgRect) {
+			const handle = getImageHandleAtPoint(imgRect, p[0], p[1]);
+			const inside = p[0] >= imgRect.x && p[0] <= imgRect.x + imgRect.w && p[1] >= imgRect.y && p[1] <= imgRect.y + imgRect.h;
+			overlay.style.cursor = handle ? 'nwse-resize' : inside ? 'move' : 'crosshair';
+			return;
+		}
+	  }
+
       if (this.activeLayerIndex >= 0 && hasActiveClip) {
         const { w, h } = getOverlaySize();
         const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
@@ -1938,6 +2547,19 @@
         evt.preventDefault();
         return;
       }
+
+    if (this.isDraggingImage) {
+    if (this.imagePointerId !== evt.pointerId) return;
+    this.isDraggingImage = false;
+    this.imagePointerId = null;
+    this.imageLayerIndex = -1;
+    this.imageDragMode = '';
+    this.imageStartPos = null;
+    this.imageStartPlacement = null;
+    overlay.style.cursor = 'crosshair';
+    evt.preventDefault();
+    return;
+    }
 
       if (!this.isDrawing) return;
       if (this.drawPointerId !== evt.pointerId) return;
@@ -2009,6 +2631,9 @@
       this.thicknessValue.textContent = String(this.thickness.value);
       const raw = Number(this.thickness.value);
       this.currentThickness = Number.isFinite(raw) ? Math.max(1, Math.min(100, Math.round(raw))) : 1;
+
+      // Keep preview in sync with thickness.
+      if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
     };
 
     update();
@@ -2060,11 +2685,7 @@
       el.classList.toggle('is-active', bg === this.currentColor || this.normalizeCssColor(bg) === this.normalizeCssColor(this.currentColor));
     }
 
-    if (!this.currentFile && this.preview instanceof HTMLElement) {
-      this.preview.style.backgroundImage = 'none';
-      this.preview.style.backgroundColor = this.currentColor;
-      this.preview.setAttribute('aria-label', 'Patroon preview: geen');
-    }
+    if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
   }
 
   normalizeCssColor(color) {
@@ -2115,6 +2736,8 @@
       const f = typeof file === 'string' ? file : '';
       this.currentFile = f;
 
+      const token = ++this.previewToken;
+
       if (!f) {
         this.preview.style.backgroundImage = 'none';
         this.preview.style.backgroundColor = this.currentColor;
@@ -2122,16 +2745,34 @@
         return;
       }
 
-      const url = `./patronen/${f}`;
       this.preview.style.backgroundColor = '';
-      this.preview.style.backgroundImage = `url(\"${url}\")`;
       this.preview.setAttribute('aria-label', `Patroon preview: ${f}`);
+
+      const thickness = this.getThickness();
+      const effectiveThickness = thickness;
+
+      this.canvasLayers.loadSvgText(f)
+        .then((svgText) => this.canvasLayers.buildSvgVariant(svgText, this.currentColor, effectiveThickness))
+        .then((variantText) => {
+          if (token !== this.previewToken) return;
+          const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(variantText)}`;
+          this.preview.style.backgroundImage = `url(\"${dataUrl}\")`;
+        })
+        .catch(() => {
+          // Fallback to raw asset if something goes wrong.
+          if (token !== this.previewToken) return;
+          const url = `./patronen/${f}`;
+          this.preview.style.backgroundImage = `url(\"${url}\")`;
+        });
     }
   }
 
   NS.initLayout = function initLayout() {
-    new MenuController().init();
+    const picker = new PatternPickerController();
+    picker.init();
+    new MenuController({
+      onRightViewSelect: (view) => picker.setRightView(view),
+    }).init();
     new PanelsController().init();
-    new PatternPickerController().init();
   };
 })();

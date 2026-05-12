@@ -338,6 +338,23 @@
       ctx.restore();
     }
 
+    drawSolidToCtx(ctx, w, h, color, clipPathN) {
+      if (!ctx) return;
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+
+      if (clipPathN) {
+        const ok = this.buildClipPath(ctx, clipPathN, w, h);
+        if (ok) ctx.clip();
+      }
+
+      ctx.fillStyle = c;
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+    }
+
     computeVisibleColorsForLayerIndex(layerIndex, expectedLayer) {
       const size = this.getCssSize();
       if (!size) return Promise.resolve([]);
@@ -383,10 +400,14 @@
       // Render this shape-layer only.
       let chain = Promise.resolve();
       for (const p of paints) {
-        if (!p?.file) continue;
+        const kind = p?.kind;
+        const color = p?.color;
+        if (kind === 'solid' || !p?.file) {
+          this.drawSolidToCtx(ctx, size.w, size.h, color, clipPathN);
+          continue;
+        }
         const file = p.file;
         const repeatCount = p.repeatCount;
-        const color = p.color;
         const thickness = p.thickness;
         const tileScaleMode = p.tileScaleMode;
         chain = chain
@@ -693,6 +714,15 @@
       c.ctx.restore();
     }
 
+    drawSolidLayer(color, clipPathN) {
+      const c = this.getContext();
+      if (!c) return;
+      const rect = c.canvas.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      this.drawSolidToCtx(c.ctx, w, h, color, clipPathN);
+    }
+
     redrawAllLayers() {
       const c = this.getContext();
       if (!c) return;
@@ -725,6 +755,18 @@
             ];
 
         for (const paint of paints) {
+          const kind = paint?.kind;
+          if (kind === 'solid' || !paint?.file) {
+            const color = paint?.color;
+            this.drawQueue = this.drawQueue
+              .then(() => {
+                this.resizeToCSSPixels();
+                this.drawSolidLayer(color, clipPathN);
+              })
+              .catch(() => {});
+            continue;
+          }
+
           const file = paint?.file;
           if (!file) continue;
           const repeatCount = paint?.repeatCount;
@@ -814,6 +856,49 @@
       return layerIndex;
     }
 
+    addClippedSolidLayer(color, clipPathN, clipKey) {
+      const safeClipN = Array.isArray(clipPathN) ? clipPathN.slice() : null;
+      const safeKey = typeof clipKey === 'string' && clipKey ? clipKey : null;
+
+      let layerIndex = -1;
+      if (safeKey) layerIndex = this.findLayerIndexByClipKey(safeKey);
+
+      if (layerIndex >= 0) {
+        const layer = this.layers[layerIndex];
+        if (layer) {
+          layer.clipPathN = safeClipN;
+          layer.clipKey = safeKey;
+          if (!Array.isArray(layer.paints)) layer.paints = [];
+          layer.paints.push({ kind: 'solid', file: null, color });
+          this.addOptimisticVisibleColor(layer, color);
+        }
+      } else {
+        this.layers.push({
+          clipPathN: safeClipN,
+          clipKey: safeKey,
+          paints: [{ kind: 'solid', file: null, color }],
+        });
+        layerIndex = this.layers.length - 1;
+        const layer = this.layers[layerIndex];
+        this.addOptimisticVisibleColor(layer, color);
+      }
+
+      if (this.layers.length === 1) this.resizeToCSSPixels();
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+        this.drawQueue = this.drawQueue
+          .then(() => {
+            this.drawSolidLayer(color, safeClipN);
+          })
+          .catch(() => {});
+      }, 0);
+
+      this.scheduleVisibleColorsCompute(layerIndex);
+      return layerIndex;
+    }
+
     hasLayers() {
       return this.layers.length > 0;
     }
@@ -833,7 +918,8 @@
       this.tileScaleToShape = qs('tileScaleToShape');
 
       this.patterns = [
-        { label: '00 Basis', file: '00-vierkant.svg' },
+        { label: 'Geen', file: '' },
+        { label: '00 Vierkant', file: '00-vierkant.svg' },
         { label: '01 Vertical (tile)', file: '01-vertical.svg' },
         { label: '02 Horizontal (tile)', file: '02-horizontal.svg' },
         { label: '03 Diagonaal 45° (tile)', file: '03-diagonal-45.svg' },
@@ -892,23 +978,21 @@
       this.initTileScaleToggle();
 
       const initial = this.patterns[0]?.file;
-      if (initial) {
-        this.select.value = initial;
-        this.applySelection(initial);
-      }
+      this.select.value = initial || '';
+      this.applySelection(initial || '');
 
       this.select.addEventListener('change', () => {
         this.applySelection(this.select.value);
       });
 
       this.preview.addEventListener('click', () => {
-        if (!this.currentFile) return;
-
         const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
         if (hasActive) {
           this.applyToActiveShape();
           return;
         }
+
+        if (!this.currentFile) return;
 
 		this.canvasLayers.addLayer(this.currentFile, this.getRepeatCount(), this.currentColor, this.getThickness());
 		this.setActiveLayerIndex(this.canvasLayers.layers.length - 1);
@@ -939,20 +1023,28 @@
     applyToActiveShape() {
       const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
       if (!hasActive) return;
-      if (!this.currentFile) return;
 
       const clipKey = this.activeClipKey || this.makeClipKey(this.activeClipPathN);
       if (!clipKey) return;
 
-      const idx = this.canvasLayers.addClippedLayer(
-        this.currentFile,
-        this.getRepeatCount(),
-        this.currentColor,
-        this.getThickness(),
-        this.activeClipPathN,
-        this.currentTileScaleMode,
-        clipKey
-      );
+      let idx = -1;
+      if (this.currentFile) {
+        idx = this.canvasLayers.addClippedLayer(
+          this.currentFile,
+          this.getRepeatCount(),
+          this.currentColor,
+          this.getThickness(),
+          this.activeClipPathN,
+          this.currentTileScaleMode,
+          clipKey
+        );
+      } else {
+        idx = this.canvasLayers.addClippedSolidLayer(
+          this.currentColor,
+          this.activeClipPathN,
+          clipKey
+        );
+      }
 
       this.setActiveLayerIndex(idx);
       this.renderLayersList();
@@ -1347,6 +1439,12 @@
       const bg = el.style.backgroundColor;
       el.classList.toggle('is-active', bg === this.currentColor || this.normalizeCssColor(bg) === this.normalizeCssColor(this.currentColor));
     }
+
+    if (!this.currentFile && this.preview instanceof HTMLElement) {
+      this.preview.style.backgroundImage = 'none';
+      this.preview.style.backgroundColor = this.currentColor;
+      this.preview.setAttribute('aria-label', 'Patroon preview: geen');
+    }
   }
 
   normalizeCssColor(color) {
@@ -1394,10 +1492,20 @@
     }
 
     applySelection(file) {
-      const url = `./patronen/${file}`;
+      const f = typeof file === 'string' ? file : '';
+      this.currentFile = f;
+
+      if (!f) {
+        this.preview.style.backgroundImage = 'none';
+        this.preview.style.backgroundColor = this.currentColor;
+        this.preview.setAttribute('aria-label', 'Patroon preview: geen');
+        return;
+      }
+
+      const url = `./patronen/${f}`;
+      this.preview.style.backgroundColor = '';
       this.preview.style.backgroundImage = `url(\"${url}\")`;
-      this.preview.setAttribute('aria-label', `Patroon preview: ${file}`);
-      this.currentFile = file;
+      this.preview.setAttribute('aria-label', `Patroon preview: ${f}`);
     }
   }
 

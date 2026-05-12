@@ -462,7 +462,7 @@
       const size = this.getCssSize();
       if (!size) return Promise.resolve([]);
 
-      const layer = this.layers?.[layerIndex];
+      const layer = this.layers && this.layers[layerIndex];
       if (!layer) return Promise.resolve([]);
       if (expectedLayer && layer !== expectedLayer) return Promise.resolve(Array.isArray(layer.visibleColors) ? layer.visibleColors : []);
       const clipPathN = layer.clipPathN;
@@ -470,7 +470,7 @@
         // Non-clipped layer: just report its last paint color.
         const paints = Array.isArray(layer.paints) ? layer.paints : [];
         const last = paints[paints.length - 1];
-        const c = typeof last?.color === 'string' && last.color.trim() ? last.color.trim() : '';
+        const c = last && typeof last.color === 'string' && last.color.trim() ? last.color.trim() : '';
         layer.visibleColors = c ? [c] : [];
         return Promise.resolve(layer.visibleColors);
       }
@@ -480,7 +480,7 @@
       const candidateRgb = [];
       const seen = new Set();
       for (const p of paints) {
-        const c = typeof p?.color === 'string' && p.color.trim() ? p.color.trim() : '';
+        const c = p && typeof p.color === 'string' && p.color.trim() ? p.color.trim() : '';
         if (!c || seen.has(c)) continue;
         const rgb = this.cssToRgb(c);
         if (!rgb) continue;
@@ -503,9 +503,9 @@
       // Render this shape-layer only.
       let chain = Promise.resolve();
       for (const p of paints) {
-        const kind = p?.kind;
-        const color = p?.color;
-        if (kind === 'solid' || !p?.file) {
+        const kind = p ? p.kind : undefined;
+        const color = p ? p.color : undefined;
+        if (kind === 'solid' || !(p && p.file)) {
           this.drawSolidToCtx(ctx, size.w, size.h, color, clipPathN);
           continue;
         }
@@ -659,8 +659,8 @@
 
     loadPatternImage(file) {
       const cached = this.imageCache.get(file);
-      if (cached?.img?.complete) return Promise.resolve(cached.img);
-      if (cached?.promise) return cached.promise;
+      if (cached && cached.img && cached.img.complete) return Promise.resolve(cached.img);
+      if (cached && cached.promise) return cached.promise;
 
       const img = new Image();
       const promise = new Promise((resolve, reject) => {
@@ -676,7 +676,7 @@
   loadSvgText(file) {
     const cached = this.svgTextCache.get(file);
     if (typeof cached === 'string') return Promise.resolve(cached);
-    if (cached?.promise) return cached.promise;
+    if (cached && cached.promise) return cached.promise;
 
     const url = `./patronen/${file}`;
     const promise = fetch(url)
@@ -732,8 +732,8 @@
     const key = `${file}|${safeColor}|${clamped}`;
 
     const cached = this.variantCache.get(key);
-    if (cached?.img?.complete) return Promise.resolve(cached.img);
-    if (cached?.promise) return cached.promise;
+    if (cached && cached.img && cached.img.complete) return Promise.resolve(cached.img);
+    if (cached && cached.promise) return cached.promise;
 
     const img = new Image();
     const promise = this.loadSvgText(file)
@@ -822,8 +822,8 @@
       if (!(blob instanceof Blob)) return Promise.reject(new Error('Invalid image blob'));
 
       const cached = this.savedImageCache.get(key);
-      if (cached?.img?.complete) return Promise.resolve(cached.img);
-      if (cached?.promise) return cached.promise;
+      if (cached && cached.img && cached.img.complete) return Promise.resolve(cached.img);
+      if (cached && cached.promise) return cached.promise;
 
       const img = new Image();
       const promise = new Promise((resolve, reject) => {
@@ -894,23 +894,23 @@
 
       this.drawQueue = Promise.resolve();
       for (const layer of this.layers) {
-        const clipPathN = layer?.clipPathN || null;
-        const paints = Array.isArray(layer?.paints) && layer.paints.length
+        const clipPathN = layer && layer.clipPathN ? layer.clipPathN : null;
+        const paints = layer && Array.isArray(layer.paints) && layer.paints.length
           ? layer.paints
           : [
               {
-                file: layer?.file,
-                repeatCount: layer?.repeatCount,
-                color: layer?.color,
-                thickness: layer?.thickness,
-                tileScaleMode: layer?.tileScaleMode,
+                file: layer ? layer.file : undefined,
+                repeatCount: layer ? layer.repeatCount : undefined,
+                color: layer ? layer.color : undefined,
+                thickness: layer ? layer.thickness : undefined,
+                tileScaleMode: layer ? layer.tileScaleMode : undefined,
               },
             ];
 
         for (const paint of paints) {
-          const kind = paint?.kind;
-          if (kind === 'image' && paint?.blob instanceof Blob) {
-            const imageId = typeof paint?.imageId === 'string' ? paint.imageId : '';
+          const kind = paint ? paint.kind : undefined;
+          if (kind === 'image' && paint && paint.blob instanceof Blob) {
+            const imageId = paint && typeof paint.imageId === 'string' ? paint.imageId : '';
             const blob = paint.blob;
             const placement = {
               xN: paint.xN,
@@ -933,8 +933,8 @@
               .catch(() => {});
             continue;
           }
-          if (kind === 'solid' || !paint?.file) {
-            const color = paint?.color;
+          if (kind === 'solid' || !(paint && paint.file)) {
+            const color = paint ? paint.color : undefined;
             this.drawQueue = this.drawQueue
               .then(() => {
                 this.resizeToCSSPixels();
@@ -944,12 +944,12 @@
             continue;
           }
 
-          const file = paint?.file;
+          const file = paint ? paint.file : undefined;
           if (!file) continue;
-          const repeatCount = paint?.repeatCount;
-          const color = paint?.color;
-          const thickness = paint?.thickness;
-          const tileScaleMode = paint?.tileScaleMode;
+          const repeatCount = paint ? paint.repeatCount : undefined;
+          const color = paint ? paint.color : undefined;
+          const thickness = paint ? paint.thickness : undefined;
+          const tileScaleMode = paint ? paint.tileScaleMode : undefined;
 
           this.drawQueue = this.drawQueue
 			.then(() => this.loadPatternVariantImage(file, color, thickness))
@@ -1167,7 +1167,7 @@
 
     addSolidPaintToLayerIndex(layerIndex, color) {
       const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
-      const layer = this.layers?.[idx];
+      const layer = this.layers && this.layers[idx];
       if (!layer) return false;
 
       const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
@@ -1318,7 +1318,7 @@
       this.initTileScaleToggle();
       this.initImageActions();
 
-      const initial = this.patterns[0]?.file;
+      const initial = this.patterns && this.patterns[0] ? this.patterns[0].file : null;
       this.select.value = initial || '';
       this.applySelection(initial || '');
 
@@ -1480,7 +1480,7 @@
 
       this.layersRoot.addEventListener('dragstart', (evt) => {
         const target = evt.target instanceof HTMLElement ? evt.target : null;
-        const item = target?.closest?.('.layers__item');
+        const item = target && typeof target.closest === 'function' ? target.closest('.layers__item') : null;
         if (!(item instanceof HTMLElement)) return;
 
         // Avoid starting a drag when interacting with buttons/inputs.
@@ -1508,7 +1508,7 @@
       this.layersRoot.addEventListener('dragover', (evt) => {
         if (this.draggingLayerViewIndex < 0) return;
         const target = evt.target instanceof HTMLElement ? evt.target : null;
-        const item = target?.closest?.('.layers__item');
+        const item = target && typeof target.closest === 'function' ? target.closest('.layers__item') : null;
         if (!(item instanceof HTMLElement)) return;
 
         evt.preventDefault();
@@ -1524,7 +1524,7 @@
       this.layersRoot.addEventListener('drop', (evt) => {
         if (this.draggingLayerViewIndex < 0) return;
         const target = evt.target instanceof HTMLElement ? evt.target : null;
-        const item = target?.closest?.('.layers__item');
+        const item = target && typeof target.closest === 'function' ? target.closest('.layers__item') : null;
         if (!(item instanceof HTMLElement)) return;
 
         evt.preventDefault();
@@ -1537,12 +1537,12 @@
         const after = evt.clientY > rect.top + rect.height / 2;
         const toV = Math.trunc(toVBase) + (after ? 1 : 0);
 
-        const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
         const activeRef = this.activeLayerIndex >= 0 ? layers[this.activeLayerIndex] : null;
 
         const changed = this.canvasLayers.reorderLayersByView(fromV, toV);
         if (changed) {
-          const nextLayers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+          const nextLayers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
           if (activeRef) {
             const nextIdx = nextLayers.indexOf(activeRef);
             this.activeLayerIndex = Number.isFinite(nextIdx) && nextIdx >= 0 ? nextIdx : -1;
@@ -1557,7 +1557,7 @@
 
       this.layersRoot.addEventListener('dragend', (evt) => {
         const target = evt.target instanceof HTMLElement ? evt.target : null;
-        const item = target?.closest?.('.layers__item');
+        const item = target && typeof target.closest === 'function' ? target.closest('.layers__item') : null;
         if (item instanceof HTMLElement) item.classList.remove('is-dragging');
         cleanupOver();
         this.draggingLayerViewIndex = -1;
@@ -1690,7 +1690,7 @@
     }
 
     syncActiveShapeToLayerIndex(layerIndex) {
-      const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
       const layer = layers[layerIndex];
 
       if (layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3) {
@@ -1705,7 +1705,7 @@
     }
 
     setActiveLayerIndex(nextIndex) {
-      const n = this.canvasLayers?.layers?.length || 0;
+      const n = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers.length : 0;
       if (!Number.isFinite(nextIndex)) return;
       const idx = Math.max(0, Math.min(n - 1, Math.trunc(nextIndex)));
       this.activeLayerIndex = n > 0 ? idx : -1;
@@ -1713,13 +1713,13 @@
 
     removeLayerIndex(layerIndex) {
       const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
-      const n = this.canvasLayers?.layers?.length || 0;
+      const n = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers.length : 0;
       if (idx < 0 || idx >= n) return;
 
       const removed = this.canvasLayers.removeLayerAt(idx);
       if (!removed) return;
 
-      const nextN = this.canvasLayers?.layers?.length || 0;
+      const nextN = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers.length : 0;
       if (nextN <= 0) {
         this.activeLayerIndex = -1;
         this.activeClipPathN = null;
@@ -1742,13 +1742,13 @@
       const c = typeof color === 'string' && color.trim() ? color.trim() : '';
       if (idx < 0 || !c) return;
 
-      const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
       const layer = layers[idx];
       if (!layer) return;
 
       const paints = Array.isArray(layer.paints) ? layer.paints : [];
       const nextPaints = paints.filter((p) => {
-        const pc = typeof p?.color === 'string' && p.color.trim() ? p.color.trim() : '';
+        const pc = p && typeof p.color === 'string' && p.color.trim() ? p.color.trim() : '';
         return pc !== c;
       });
 
@@ -1776,7 +1776,7 @@
     }
 
     applySolidToSelectedLayerOrCanvas() {
-      const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
 
       if (this.activeLayerIndex >= 0 && this.activeLayerIndex < layers.length) {
         const layer = layers[this.activeLayerIndex];
@@ -1815,7 +1815,7 @@
 
     renderLayersList() {
       if (!(this.layersRoot instanceof HTMLElement)) return;
-      const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
 	  this.clearLayerThumbObjectUrls();
 
       this.layersRoot.innerHTML = '';
@@ -1882,7 +1882,7 @@
         } else {
           const paints = Array.isArray(layer.paints) && layer.paints.length ? layer.paints : [{ color: layer.color }];
           for (const p of paints) {
-            const c = typeof p?.color === 'string' && p.color.trim() ? p.color.trim() : '';
+            const c = p && typeof p.color === 'string' && p.color.trim() ? p.color.trim() : '';
             if (!c) continue;
             if (seen.has(c)) continue;
             seen.add(c);
@@ -2070,7 +2070,7 @@
     const clamp01 = (n) => Math.max(0, Math.min(1, n));
 
   const getImagePaintForLayerIndex = (layerIndex) => {
-    const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     const layer = layers[layerIndex];
     if (!layer) return null;
     const paints = Array.isArray(layer.paints) ? layer.paints : [];
@@ -2098,7 +2098,7 @@
   };
 
   const hitTestTopmostImageLayer = (px, py) => {
-    const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     const { w, h } = getOverlaySize();
     if (w <= 0 || h <= 0) return -1;
 
@@ -2387,7 +2387,7 @@
 
             if (nextClipN.length < 3) return;
 
-            const layers = Array.isArray(this.canvasLayers?.layers) ? this.canvasLayers.layers : [];
+            const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
             const layer = layers[this.dragLayerIndex];
             if (!layer) return;
 
@@ -2602,7 +2602,8 @@
     const overlay = this.drawOverlay;
 
     const canvasRect = this.canvas.getBoundingClientRect();
-    const parentRect = this.canvas.parentElement?.getBoundingClientRect();
+    const parent = this.canvas.parentElement;
+    const parentRect = parent ? parent.getBoundingClientRect() : null;
     if (!parentRect) return;
 
     const left = canvasRect.left - parentRect.left;

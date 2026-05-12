@@ -1470,6 +1470,9 @@
       this.dragOverItem = null;
 
       this.previewToken = 0;
+
+      this.pendingGroupParamRaf = 0;
+      this.pendingGroupPatternParams = null;
     }
 
     init() {
@@ -2271,6 +2274,81 @@
       // Make the toggled layer the primary active layer.
       this.setActiveLayerIndex(idx);
       this.syncActiveShapeToLayerIndex(idx);
+    }
+
+    getSelectedLayerIndices() {
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      const n = layers.length;
+      const set = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
+      return Array.from(set)
+        .map((i) => (Number.isFinite(i) ? Math.trunc(i) : -1))
+        .filter((i) => i >= 0 && i < n);
+    }
+
+    scheduleUpdateSelectedLayersPatternParams(nextParams) {
+      const params = nextParams && typeof nextParams === 'object' ? nextParams : null;
+      if (!params) return;
+
+      if (!this.pendingGroupPatternParams) this.pendingGroupPatternParams = {};
+      if (Number.isFinite(params.repeatCount)) this.pendingGroupPatternParams.repeatCount = Math.trunc(params.repeatCount);
+      if (Number.isFinite(params.thickness)) this.pendingGroupPatternParams.thickness = Math.trunc(params.thickness);
+
+      if (this.pendingGroupParamRaf) return;
+      this.pendingGroupParamRaf = window.requestAnimationFrame(() => {
+        this.pendingGroupParamRaf = 0;
+        const p = this.pendingGroupPatternParams;
+        this.pendingGroupPatternParams = null;
+        if (!p) return;
+        this.updateSelectedLayersPatternParams(p);
+      });
+    }
+
+    updateSelectedLayersPatternParams(params) {
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      const indices = this.getSelectedLayerIndices();
+      if (indices.length === 0) return;
+
+      const hasRepeat = Number.isFinite(params.repeatCount);
+      const hasThickness = Number.isFinite(params.thickness);
+
+      let touchedAny = false;
+      for (const idx of indices) {
+        const layer = layers[idx];
+        if (!layer) continue;
+        const paints = Array.isArray(layer.paints) ? layer.paints : [];
+        let touched = false;
+        for (const paint of paints) {
+          if (!paint) continue;
+          if (paint.kind === 'image') continue;
+          if (paint.kind === 'solid') continue;
+          if (!(typeof paint.file === 'string' && paint.file.trim())) continue;
+
+          if (hasRepeat) paint.repeatCount = params.repeatCount;
+          if (hasThickness) paint.thickness = params.thickness;
+          touched = true;
+        }
+
+        if (touched && typeof this.canvasLayers.scheduleVisibleColorsCompute === 'function') {
+          const clipPathN = Array.isArray(layer.clipPathN) ? layer.clipPathN : null;
+          if (clipPathN && clipPathN.length >= 3) this.canvasLayers.scheduleVisibleColorsCompute(idx);
+        }
+
+        touchedAny = touchedAny || touched;
+      }
+
+      if (!touchedAny) return;
+
+      this.canvasLayers.redrawAllLayers();
+      this.renderLayersList();
+
+      // Refresh once async visible-colors computations finish.
+      const token = ++this.visibleColorsRenderToken;
+      Promise.all(indices.map((i) => this.canvasLayers.getLatestVisibleColorsPromise(i).catch(() => {})))
+        .then(() => {
+          if (token !== this.visibleColorsRenderToken) return;
+          this.renderLayersList();
+        })
+        .catch(() => {});
     }
 
     setActiveLayerIndex(nextIndex) {
@@ -3337,6 +3415,9 @@
 
       // Keep preview in sync with thickness.
       if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
+
+      // Apply to group selection.
+      this.scheduleUpdateSelectedLayersPatternParams({ thickness: this.currentThickness });
     };
 
     update();
@@ -3406,6 +3487,9 @@
 
       const update = () => {
         this.repeatValue.textContent = String(this.repeat.value);
+
+        const nextRepeat = this.getRepeatCount();
+        this.scheduleUpdateSelectedLayersPatternParams({ repeatCount: nextRepeat });
       };
       update();
       this.repeat.addEventListener('input', update);

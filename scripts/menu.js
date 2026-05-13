@@ -2591,18 +2591,6 @@
       if (typeof out.toBlob === 'function') {
         out.toBlob((blob) => {
           if (!(blob instanceof Blob)) return;
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = fileName;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          window.setTimeout(() => {
-            try {
-              URL.revokeObjectURL(url);
-            } catch (_) {}
-          }, 0);
           saveBlob(blob);
         }, 'image/png');
         return;
@@ -2610,14 +2598,16 @@
 
       // Fallback for older browsers.
       const dataUrl = out.toDataURL('image/png');
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
 
-      if (usedCropRect) clearCropSelection();
+      // Convert data URL to Blob so we can still store it without triggering a download.
+      fetch(dataUrl)
+        .then((res) => res.blob())
+        .then((blob) => {
+          saveBlob(blob);
+        })
+        .catch(() => {
+          if (usedCropRect) clearCropSelection();
+        });
     }
 
     makeClipKey(pathN) {

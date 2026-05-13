@@ -1389,6 +1389,8 @@
     this.colorBarSupportA = qs('colorBarSupportA');
     this.colorBarSupportB = qs('colorBarSupportB');
     this.colorMixCanvas = qs('colorMixCanvas');
+    this.colorMixCanvasPatterns = qs('colorMixCanvasPatterns');
+    this.colorMixCanvasShapes = qs('colorMixCanvasShapes');
 	  this.thickness = qs('patternThickness');
 	  this.thicknessValue = qs('patternThicknessValue');
       this.tileScaleToShape = qs('tileScaleToShape');
@@ -1713,6 +1715,7 @@
 
       if (next === 'images') this.renderSavedImages();
       if (next === 'shapes') this.renderSavedShapes();
+	  this.renderColorMixCanvas();
     }
 
     clearSavedImagesObjectUrls() {
@@ -3759,8 +3762,14 @@
   }
 
   resizeColorMixCanvas() {
-    if (!(this.colorMixCanvas instanceof HTMLCanvasElement)) return;
-    const canvas = this.colorMixCanvas;
+    // Backwards-compatible wrapper (kept for call sites).
+    if (this.colorMixCanvas instanceof HTMLCanvasElement) this.resizeColorMixCanvasEl(this.colorMixCanvas);
+    if (this.colorMixCanvasPatterns instanceof HTMLCanvasElement) this.resizeColorMixCanvasEl(this.colorMixCanvasPatterns);
+    if (this.colorMixCanvasShapes instanceof HTMLCanvasElement) this.resizeColorMixCanvasEl(this.colorMixCanvasShapes);
+  }
+
+  resizeColorMixCanvasEl(canvas) {
+    if (!(canvas instanceof HTMLCanvasElement)) return;
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(1, rect.width);
     const cssH = Math.max(1, rect.height);
@@ -3773,14 +3782,10 @@
   }
 
   renderColorMixCanvas() {
-    if (!(this.colorMixCanvas instanceof HTMLCanvasElement)) return;
-    this.resizeColorMixCanvas();
-    const canvas = this.colorMixCanvas;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const w = canvas.getBoundingClientRect().width;
-    const h = canvas.getBoundingClientRect().height;
-    if (!w || !h) return;
+    const canvases = [this.colorMixCanvas, this.colorMixCanvasPatterns, this.colorMixCanvasShapes].filter(
+      (c) => c instanceof HTMLCanvasElement
+    );
+    if (!canvases.length) return;
 
     const getColor = (k) => {
       const colors = this.colorBarColors && Array.isArray(this.colorBarColors[k]) ? this.colorBarColors[k] : [];
@@ -3793,17 +3798,27 @@
     const c3 = getColor('supportA') || c2;
     const c4 = getColor('supportB') || c2;
 
-    ctx.clearRect(0, 0, w, h);
-    let x = 0;
-    const widths = [0.8, 0.1, 0.05, 0.05].map((p) => Math.round(w * p));
-    // Ensure the last block fills any rounding gap.
-    widths[3] = Math.max(0, w - (widths[0] + widths[1] + widths[2]));
-    const colors = [c1, c2, c3, c4];
-    for (let i = 0; i < widths.length; i++) {
-      const ww = widths[i];
-      ctx.fillStyle = colors[i];
-      ctx.fillRect(x, 0, ww, h);
-      x += ww;
+    for (const canvas of canvases) {
+      if (!(canvas instanceof HTMLCanvasElement)) continue;
+      // When hidden, dimensions might be 0; skip until visible.
+      const w = canvas.getBoundingClientRect().width;
+      const h = canvas.getBoundingClientRect().height;
+      if (!w || !h) continue;
+      this.resizeColorMixCanvasEl(canvas);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
+
+      ctx.clearRect(0, 0, w, h);
+      let x = 0;
+      const widths = [0.8, 0.1, 0.05, 0.05].map((p) => Math.round(w * p));
+      widths[3] = Math.max(0, w - (widths[0] + widths[1] + widths[2]));
+      const colors = [c1, c2, c3, c4];
+      for (let i = 0; i < widths.length; i++) {
+        const ww = widths[i];
+        ctx.fillStyle = colors[i];
+        ctx.fillRect(x, 0, ww, h);
+        x += ww;
+      }
     }
   }
 

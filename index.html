@@ -80,6 +80,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							<input id="patternRepeat" class="range" type="range" min="1" max="100" step="1" value="10" />
 							<label class="field">Kleur</label>
 							<div id="palette" class="palette" role="listbox" aria-label="Kleurenpalet"></div>
+							<label class="field">Gekozen kleuren</label>
+							<canvas id="colorMixCanvasPatterns" class="color-mix" aria-label="Kleurmix"></canvas>
 							<label class="field" for="patternThickness">Lijndikte: <span id="patternThicknessValue">1</span></label>
 							<input id="patternThickness" class="range" type="range" min="1" max="100" step="1" value="1" />
 							<label class="toggle">
@@ -117,6 +119,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							<div class="layers__actions" aria-label="Vormen acties">
 								<button id="saveShapeBtn" class="layers__action" type="button">Bewaar vorm</button>
 							</div>
+							<label class="field">Gekozen kleuren</label>
+							<canvas id="colorMixCanvasShapes" class="color-mix" aria-label="Kleurmix"></canvas>
 							<label class="field">Opgeslagen vormen</label>
 							<div id="savedShapes" class="saved-shapes" aria-label="Opgeslagen vormen"></div>
 						</div>

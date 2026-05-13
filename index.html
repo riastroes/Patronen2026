@@ -34,6 +34,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 					<nav class="topnav" id="topnav">
 						<a href="#" data-app-action="reset">Start</a>
 						<a href="#" data-right-view="patterns">Patronen</a>
+						<a href="#" data-right-view="colors">Kleuren</a>
 						<a href="#" data-right-view="images">Afbeeldingen</a>
 						<a href="#" data-right-view="shapes">Vormen</a>
 						<a href="#">Over</a>
@@ -77,14 +78,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							<div class="pattern-preview" id="patternPreview" role="img" aria-label="Patroon preview"></div>
 							<label class="field" for="patternRepeat">Tegels: <span id="patternRepeatValue">10</span></label>
 							<input id="patternRepeat" class="range" type="range" min="1" max="100" step="1" value="10" />
-							<label class="field">Kleur</label>
-							<div id="palette" class="palette" role="listbox" aria-label="Kleurenpalet"></div>
 							<label class="field" for="patternThickness">Lijndikte: <span id="patternThicknessValue">1</span></label>
 							<input id="patternThickness" class="range" type="range" min="1" max="100" step="1" value="1" />
 							<label class="toggle">
 								<input id="tileScaleToShape" type="checkbox" checked />
 								Tegels schalen op vorm
 							</label>
+						</div>
+						<div id="rightViewColors" data-right-view="colors" hidden>
+							<label class="field">Kleur</label>
+							<div id="palette" class="palette" role="listbox" aria-label="Kleurenpalet"></div>
 						</div>
 						<div id="rightViewImages" data-right-view="images" hidden>
 							<label class="field">Opgeslagen afbeeldingen</label>

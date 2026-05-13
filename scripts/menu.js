@@ -1371,6 +1371,7 @@
       this.select = qs('patternSelect');
       this.preview = qs('patternPreview');
       this.rightViewPatterns = qs('rightViewPatterns');
+      this.rightViewColors = qs('rightViewColors');
       this.rightViewImages = qs('rightViewImages');
       this.rightViewShapes = qs('rightViewShapes');
       this.savedImagesRoot = qs('savedImages');
@@ -1675,11 +1676,20 @@
     }
 
     setRightView(view) {
-      const next = view === 'images' ? 'images' : view === 'shapes' ? 'shapes' : 'patterns';
+      const next = view === 'images'
+        ? 'images'
+        : view === 'shapes'
+          ? 'shapes'
+          : view === 'colors'
+            ? 'colors'
+            : 'patterns';
       this.rightView = next;
 
       if (this.rightViewPatterns instanceof HTMLElement) {
         this.rightViewPatterns.hidden = next !== 'patterns';
+      }
+      if (this.rightViewColors instanceof HTMLElement) {
+        this.rightViewColors.hidden = next !== 'colors';
       }
       if (this.rightViewImages instanceof HTMLElement) {
         this.rightViewImages.hidden = next !== 'images';

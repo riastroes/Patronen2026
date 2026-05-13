@@ -2574,15 +2574,9 @@
           blob,
         };
 
-        // Persist, refresh UI, then auto-export a PDF with all saved images.
-        this.savedImagesDB
-          .put(record)
-          .catch(() => {})
-          .then(() => {
-            if (this.rightView === 'images') this.renderSavedImages();
-            return this.exportSavedImagesPdf({ concept, description, createdAt: record.createdAt }).catch(() => false);
-          })
-          .catch(() => {});
+        // Persist and refresh the Images view (no auto-PDF generation).
+        this.savedImagesDB.put(record).catch(() => {});
+        if (this.rightView === 'images') this.renderSavedImages();
 
         // After saving a cropped export, remove the crop grid.
         if (usedCropRect) clearCropSelection();

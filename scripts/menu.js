@@ -1383,6 +1383,7 @@
 	  this.cropToolBtn = qs('cropToolBtn');
 	  this.saveImageBtn = qs('saveImageBtn');
 	  this.exportPdfBtn = qs('exportPdfBtn');
+    this.clearConceptBtn = qs('clearConceptBtn');
       this.repeat = qs('patternRepeat');
       this.repeatValue = qs('patternRepeatValue');
       this.palette = qs('palette');
@@ -1513,6 +1514,26 @@
       this.initTileScaleToggle();
       this.initImageActions();
       this.initShapeActions();
+
+      // Persist Concept/Omschrijving across sessions.
+      this.restoreConceptDescriptionFromStorage();
+      if (this.conceptInput instanceof HTMLInputElement && this.conceptInput.dataset.boundStorage !== '1') {
+        this.conceptInput.dataset.boundStorage = '1';
+        this.conceptInput.addEventListener('input', () => this.persistConceptDescriptionToStorage());
+        this.conceptInput.addEventListener('change', () => this.persistConceptDescriptionToStorage());
+      }
+      if (this.descriptionInput instanceof HTMLTextAreaElement && this.descriptionInput.dataset.boundStorage !== '1') {
+        this.descriptionInput.dataset.boundStorage = '1';
+        this.descriptionInput.addEventListener('input', () => this.persistConceptDescriptionToStorage());
+        this.descriptionInput.addEventListener('change', () => this.persistConceptDescriptionToStorage());
+      }
+
+      if (this.clearConceptBtn && this.clearConceptBtn.dataset.bound !== '1') {
+        this.clearConceptBtn.dataset.bound = '1';
+        this.clearConceptBtn.addEventListener('click', () => {
+          this.clearConceptDescriptionStorageAndFields();
+        });
+      }
 
       if (this.exportPdfBtn && this.exportPdfBtn.dataset.bound !== '1') {
         this.exportPdfBtn.dataset.bound = '1';
@@ -1809,6 +1830,66 @@
     getDescriptionValue() {
       if (!(this.descriptionInput instanceof HTMLTextAreaElement)) return '';
       return typeof this.descriptionInput.value === 'string' ? this.descriptionInput.value.trim() : '';
+    }
+
+    getConceptStorage() {
+      try {
+        if (!('localStorage' in window)) return null;
+        return window.localStorage;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    getConceptStorageKeys() {
+      return {
+        concept: 'Patronen2026.concept',
+        description: 'Patronen2026.description',
+      };
+    }
+
+    restoreConceptDescriptionFromStorage() {
+      const store = this.getConceptStorage();
+      if (!store) return;
+
+      const keys = this.getConceptStorageKeys();
+      const concept = store.getItem(keys.concept) || '';
+      const description = store.getItem(keys.description) || '';
+
+      if (this.conceptInput instanceof HTMLInputElement && !this.conceptInput.value) {
+        this.conceptInput.value = concept;
+      }
+      if (this.descriptionInput instanceof HTMLTextAreaElement && !this.descriptionInput.value) {
+        this.descriptionInput.value = description;
+      }
+    }
+
+    persistConceptDescriptionToStorage() {
+      const store = this.getConceptStorage();
+      if (!store) return;
+
+      const keys = this.getConceptStorageKeys();
+      const concept = this.conceptInput instanceof HTMLInputElement ? this.conceptInput.value : '';
+      const description = this.descriptionInput instanceof HTMLTextAreaElement ? this.descriptionInput.value : '';
+
+      try {
+        store.setItem(keys.concept, concept || '');
+        store.setItem(keys.description, description || '');
+      } catch (_) {}
+    }
+
+    clearConceptDescriptionStorageAndFields() {
+      const store = this.getConceptStorage();
+
+      if (this.conceptInput instanceof HTMLInputElement) this.conceptInput.value = '';
+      if (this.descriptionInput instanceof HTMLTextAreaElement) this.descriptionInput.value = '';
+
+      if (!store) return;
+      const keys = this.getConceptStorageKeys();
+      try {
+        store.removeItem(keys.concept);
+        store.removeItem(keys.description);
+      } catch (_) {}
     }
 
     sanitizeFileStem(name) {

@@ -1498,6 +1498,7 @@
 
       this.initRepeatControl();
 	  this.initPaletteControl();
+	  this.initColorMixCanvasControl();
     this.initThicknessControl();
       this.initTileScaleToggle();
       this.initImageActions();
@@ -3591,15 +3592,48 @@
 
   setCurrentColor(color) {
     this.currentColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
-    if (!(this.palette instanceof HTMLElement)) return;
-    for (const el of Array.from(this.palette.children)) {
-      if (!(el instanceof HTMLElement)) continue;
-      const bg = el.style.backgroundColor;
-      el.classList.toggle('is-active', bg === this.currentColor || this.normalizeCssColor(bg) === this.normalizeCssColor(this.currentColor));
+
+    if (this.palette instanceof HTMLElement) {
+      for (const el of Array.from(this.palette.children)) {
+        if (!(el instanceof HTMLElement)) continue;
+        const bg = el.style.backgroundColor;
+        el.classList.toggle(
+          'is-active',
+          bg === this.currentColor || this.normalizeCssColor(bg) === this.normalizeCssColor(this.currentColor)
+        );
+      }
     }
 
     if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
     this.updateColorBars();
+  }
+
+  initColorMixCanvasControl() {
+    const canvases = [this.colorMixCanvas, this.colorMixCanvasPatterns, this.colorMixCanvasShapes].filter(
+      (c) => c instanceof HTMLCanvasElement
+    );
+    for (const canvas of canvases) {
+      if (!(canvas instanceof HTMLCanvasElement)) continue;
+      if (canvas.dataset.boundMix === '1') continue;
+      canvas.dataset.boundMix = '1';
+      canvas.style.cursor = 'pointer';
+      canvas.addEventListener('click', (evt) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = evt.clientX - rect.left;
+        const w = rect.width;
+        if (!w) return;
+        const t = Math.max(0, Math.min(0.999999, x / w));
+        let key = 'primary';
+        if (t >= 0.8 && t < 0.9) key = 'complement';
+        else if (t >= 0.9 && t < 0.95) key = 'supportA';
+        else if (t >= 0.95) key = 'supportB';
+
+        const colors = this.colorBarColors && Array.isArray(this.colorBarColors[key]) ? this.colorBarColors[key] : [];
+        const idx = this.colorBarSelectedIndex && Number.isFinite(this.colorBarSelectedIndex[key]) ? this.colorBarSelectedIndex[key] : -1;
+        const picked = idx >= 0 && idx < colors.length ? colors[idx] : '';
+        if (picked) this.setCurrentColor(picked);
+      });
+    }
   }
 
   parseCssRgb(color) {

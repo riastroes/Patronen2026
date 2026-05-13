@@ -1474,6 +1474,7 @@
       this.rightViewColors = qs('rightViewColors');
       this.rightViewImages = qs('rightViewImages');
       this.rightViewShapes = qs('rightViewShapes');
+	  this.rightPanelTitle = qs('rightPanelTitle');
       this.savedImagesRoot = qs('savedImages');
       this.savedShapesRoot = qs('savedShapes');
       this.saveShapeBtn = qs('saveShapeBtn');
@@ -1976,6 +1977,23 @@
       if (this.rightViewShapes instanceof HTMLElement) {
         this.rightViewShapes.hidden = next !== 'shapes';
       }
+
+    if (this.rightPanelTitle instanceof HTMLElement) {
+      const title = next === 'start'
+        ? 'Concept'
+        : next === 'composition'
+          ? 'Compositie'
+          : next === 'colors'
+            ? 'Kleuren'
+            : next === 'patterns'
+              ? 'Patronen'
+              : next === 'shapes'
+                ? 'Vormen'
+                : next === 'images'
+                  ? 'Afbeeldingen'
+                  : 'Over';
+      this.rightPanelTitle.textContent = title;
+    }
 
       // Ensure the right panel is visible.
       document.body.classList.remove('right-collapsed');

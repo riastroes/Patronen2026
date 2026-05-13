@@ -1,8 +1,8 @@
 'use strict';
 
 function main() {
-  if (window.Patronen2026 && typeof window.Patronen2026.initLayout === 'function') {
-    window.Patronen2026.initLayout();
+  if (window.Ontwerpstudio2026 && typeof window.Ontwerpstudio2026.initLayout === 'function') {
+    window.Ontwerpstudio2026.initLayout();
   }
 }
 

@@ -1,4 +1,4 @@
-/* Patronen2026 - basic styles */
+/* Ontwerpstudio 2026 - basic styles */
 
 html,
 body {
@@ -349,6 +349,29 @@ body.right-collapsed #rightPanel {
   cursor: pointer;
 }
 
+.saved-images__item.is-selected {
+  outline: 2px solid var(--border);
+  outline-offset: 2px;
+}
+
+.saved-images__favorite {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 14px;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
 .saved-images__delete {
   position: absolute;
   top: 6px;
@@ -413,6 +436,11 @@ body.right-collapsed #rightPanel {
   padding: 8px 10px;
   border-radius: 10px;
   cursor: pointer;
+}
+
+.layers__action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .layers__action:hover {

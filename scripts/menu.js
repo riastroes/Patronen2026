@@ -1,7 +1,88 @@
 'use strict';
 
 (function () {
-  const NS = (window.Patronen2026 = window.Patronen2026 || {});
+  const NS = (window.Ontwerpstudio2026 = window.Ontwerpstudio2026 || {});
+
+  const APP_ID = 'Ontwerpstudio2026';
+  const LEGACY_APP_ID = 'Patronen2026';
+
+  function dbExists(name) {
+    try {
+      if (!('indexedDB' in window)) return Promise.resolve(false);
+      if (typeof indexedDB.databases !== 'function') return Promise.resolve(true);
+      return indexedDB
+        .databases()
+        .then((dbs) => Array.isArray(dbs) && dbs.some((d) => d && d.name === name))
+        .catch(() => true);
+    } catch (_) {
+      return Promise.resolve(true);
+    }
+  }
+
+  function openDb(name, version, onUpgrade) {
+    return new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) {
+        reject(new Error('IndexedDB not available'));
+        return;
+      }
+
+      const req = indexedDB.open(name, version);
+      req.onupgradeneeded = () => {
+        try {
+          if (typeof onUpgrade === 'function') onUpgrade(req.result);
+        } catch (_) {}
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
+    });
+  }
+
+  function getAllFromDb(db, storeName) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (!db.objectStoreNames.contains(storeName)) {
+          resolve([]);
+          return;
+        }
+        const tx = db.transaction(storeName, 'readonly');
+        const store = tx.objectStore(storeName);
+        const req = store.getAll();
+        req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+        req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  function putManyToDb(db, storeName, items) {
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) return Promise.resolve(true);
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        for (const it of list) store.put(it);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  function deleteDb(name) {
+    return new Promise((resolve) => {
+      try {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => resolve(false);
+        req.onblocked = () => resolve(false);
+      } catch (_) {
+        resolve(false);
+      }
+    });
+  }
 
   function qs(id) {
     return document.getElementById(id);
@@ -54,7 +135,7 @@
 
   class SavedImagesDB {
     constructor() {
-      this.dbName = 'Patronen2026';
+      this.dbName = APP_ID;
       this.storeName = 'savedImages';
       this.version = 2;
       this.dbPromise = null;
@@ -145,7 +226,7 @@
 
   class SavedShapesDB {
     constructor() {
-      this.dbName = 'Patronen2026';
+      this.dbName = APP_ID;
       this.storeName = 'savedShapes';
       this.version = 2;
       this.dbPromise = null;
@@ -1384,6 +1465,9 @@
 	  this.saveImageBtn = qs('saveImageBtn');
 	  this.exportPdfBtn = qs('exportPdfBtn');
     this.clearConceptBtn = qs('clearConceptBtn');
+    this.deleteSavedImageBtn = qs('deleteSavedImageBtn');
+    this.downloadSavedImageBtn = qs('downloadSavedImageBtn');
+    this.favoriteSavedImageBtn = qs('favoriteSavedImageBtn');
       this.repeat = qs('patternRepeat');
       this.repeatValue = qs('patternRepeatValue');
       this.palette = qs('palette');
@@ -1410,6 +1494,8 @@
   this.savedShapesDB = new SavedShapesDB();
     this.savedImagesObjectUrls = [];
 	  this.layerThumbObjectUrls = [];
+    this.selectedSavedImageId = '';
+    this.savedImagesCache = [];
 
       this.patterns = [
         { label: 'Geen', file: '' },
@@ -1507,6 +1593,9 @@
 
       this.populateOptions();
 
+      // Migrate legacy IndexedDB/localStorage from previous app name.
+      this.migrateLegacyAppData().catch(() => {});
+
       this.initRepeatControl();
 	  this.initPaletteControl();
 	  this.initColorMixCanvasControl();
@@ -1544,6 +1633,27 @@
           const concept = this.getConceptValue();
           const description = this.getDescriptionValue();
           this.exportSavedImagesPdf({ concept, description, createdAt: Date.now() }).catch(() => false);
+        });
+      }
+
+      if (this.deleteSavedImageBtn && this.deleteSavedImageBtn.dataset.bound !== '1') {
+        this.deleteSavedImageBtn.dataset.bound = '1';
+        this.deleteSavedImageBtn.addEventListener('click', () => {
+          this.deleteSelectedSavedImage();
+        });
+      }
+
+      if (this.downloadSavedImageBtn && this.downloadSavedImageBtn.dataset.bound !== '1') {
+        this.downloadSavedImageBtn.dataset.bound = '1';
+        this.downloadSavedImageBtn.addEventListener('click', () => {
+          this.downloadSelectedSavedImage();
+        });
+      }
+
+      if (this.favoriteSavedImageBtn && this.favoriteSavedImageBtn.dataset.bound !== '1') {
+        this.favoriteSavedImageBtn.dataset.bound = '1';
+        this.favoriteSavedImageBtn.addEventListener('click', () => {
+          this.toggleFavoriteSelectedSavedImage();
         });
       }
 
@@ -1846,14 +1956,47 @@
 
     getConceptStorageKeys() {
       return {
-        concept: 'Patronen2026.concept',
-        description: 'Patronen2026.description',
+        concept: `${APP_ID}.concept`,
+        description: `${APP_ID}.description`,
       };
+    }
+
+    getLegacyConceptStorageKeys() {
+      return {
+        concept: `${LEGACY_APP_ID}.concept`,
+        description: `${LEGACY_APP_ID}.description`,
+      };
+    }
+
+    migrateLegacyConceptDescriptionIfNeeded() {
+      const store = this.getConceptStorage();
+      if (!store) return;
+
+      const keys = this.getConceptStorageKeys();
+      const legacy = this.getLegacyConceptStorageKeys();
+
+      const newConcept = store.getItem(keys.concept);
+      const newDescription = store.getItem(keys.description);
+      // If the new keys exist (even if empty strings), do not migrate.
+      if (newConcept !== null || newDescription !== null) return;
+
+      const legacyConcept = store.getItem(legacy.concept);
+      const legacyDescription = store.getItem(legacy.description);
+      if (!legacyConcept && !legacyDescription) return;
+
+      try {
+        store.setItem(keys.concept, legacyConcept || '');
+        store.setItem(keys.description, legacyDescription || '');
+        store.removeItem(legacy.concept);
+        store.removeItem(legacy.description);
+      } catch (_) {}
     }
 
     restoreConceptDescriptionFromStorage() {
       const store = this.getConceptStorage();
       if (!store) return;
+
+      this.migrateLegacyConceptDescriptionIfNeeded();
 
       const keys = this.getConceptStorageKeys();
       const concept = store.getItem(keys.concept) || '';
@@ -1893,6 +2036,67 @@
         store.removeItem(keys.concept);
         store.removeItem(keys.description);
       } catch (_) {}
+    }
+
+    migrateLegacyAppData() {
+      // localStorage migration is handled lazily in restoreConceptDescriptionFromStorage.
+      if (!('indexedDB' in window)) return Promise.resolve(false);
+      if (APP_ID === LEGACY_APP_ID) return Promise.resolve(false);
+
+      const version = 2;
+      const newName = APP_ID;
+      const oldName = LEGACY_APP_ID;
+
+      return Promise.all([dbExists(oldName), this.savedImagesDB.getAll().catch(() => []), this.savedShapesDB.getAll().catch(() => [])]).then(
+        ([legacyExists, newImages, newShapes]) => {
+          const hasNewData = (Array.isArray(newImages) && newImages.length > 0) || (Array.isArray(newShapes) && newShapes.length > 0);
+          if (hasNewData) return false;
+          if (!legacyExists) return false;
+
+          return openDb(oldName, version, null)
+            .then((legacyDb) =>
+              Promise.all([getAllFromDb(legacyDb, 'savedImages').catch(() => []), getAllFromDb(legacyDb, 'savedShapes').catch(() => [])])
+                .then(([legacyImages, legacyShapes]) => ({ legacyDb, legacyImages, legacyShapes }))
+                .catch(() => ({ legacyDb, legacyImages: [], legacyShapes: [] }))
+            )
+            .then(({ legacyDb, legacyImages, legacyShapes }) => {
+              // Ensure new DB exists (open via our wrappers).
+                return Promise.all([this.savedImagesDB.open(), this.savedShapesDB.open()]).then(([newDb]) => ({ legacyDb, newDb, legacyImages, legacyShapes }));
+            })
+            .then(({ legacyDb, newDb, legacyImages, legacyShapes }) => {
+              const imgs = Array.isArray(legacyImages) ? legacyImages : [];
+              const shapes = Array.isArray(legacyShapes) ? legacyShapes : [];
+
+              return Promise.all([
+                putManyToDb(newDb, 'savedImages', imgs),
+                putManyToDb(newDb, 'savedShapes', shapes),
+              ])
+                .then(() => {
+                  try {
+                    legacyDb.close();
+                  } catch (_) {}
+                  return true;
+                })
+                .catch(() => {
+                  try {
+                    legacyDb.close();
+                  } catch (_) {}
+                  return false;
+                });
+            })
+            .then((did) => {
+              if (!did) return false;
+              // Best-effort cleanup of the legacy DB.
+              return deleteDb(oldName).then(() => true);
+            })
+            .then(() => {
+              if (this.rightView === 'images') this.renderSavedImages();
+              if (this.rightView === 'shapes') this.renderSavedShapes();
+              return true;
+            })
+            .catch(() => false);
+        }
+      );
     }
 
     sanitizeFileStem(name) {
@@ -1961,7 +2165,7 @@
       const concept = opts && typeof opts.concept === 'string' ? opts.concept : '';
       const description = opts && typeof opts.description === 'string' ? opts.description : '';
       const createdAt = opts && Number.isFinite(opts.createdAt) ? Number(opts.createdAt) : Date.now();
-      const title = concept.trim() || 'Patronen 2026';
+    	  const title = concept.trim() || 'Ontwerpstudio 2026';
       const dateLine = this.formatDateTimeNl(createdAt);
 
       return this.savedImagesDB
@@ -2060,11 +2264,14 @@
               }
             }
 
-            // 2) Following pages: full-size images.
-            doc.addPage();
-            y = margin;
+            // 2) Following pages: full-size images (favorites only).
+            const favorites = prepared.filter((p) => p && p.it && !!p.it.favorite);
+            if (favorites.length > 0) {
+              doc.addPage();
+              y = margin;
+            }
 
-            for (const p of prepared) {
+            for (const p of favorites) {
               let drawW = maxW;
               let drawH = (drawW * p.ih) / p.iw;
 
@@ -2087,7 +2294,7 @@
             }
           }
 
-          const stem = this.sanitizeFileStem(title) || 'patronen2026';
+            const stem = this.sanitizeFileStem(title) || 'ontwerpstudio-2026';
           const stamp = this.formatDateStamp(createdAt);
           // Note: browsers do not guarantee saving into folders; this name is still helpful.
           const fileName = `pdf/${stem}-${stamp}.pdf`;
@@ -2127,6 +2334,12 @@
             .filter((it) => it && typeof it.id === 'string' && it.blob instanceof Blob)
             .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
 
+          this.savedImagesCache = sorted;
+          if (this.selectedSavedImageId && !sorted.some((it) => String(it.id) === String(this.selectedSavedImageId))) {
+            this.selectedSavedImageId = '';
+          }
+          this.updateSavedImagesToolbarState();
+
           if (sorted.length === 0) {
             this.savedImagesRoot.textContent = 'Nog geen opgeslagen afbeeldingen.';
             return;
@@ -2143,51 +2356,115 @@
             btn.type = 'button';
             btn.className = 'saved-images__item';
             btn.style.backgroundImage = `url("${url}")`;
+
+            const isSelected = String(it.id) === String(this.selectedSavedImageId);
+            if (isSelected) btn.classList.add('is-selected');
             btn.setAttribute('aria-label', 'Opgeslagen afbeelding');
 			btn.draggable = true;
 			btn.dataset.imageId = it.id;
 			btn.addEventListener('dragstart', (evt) => {
 				if (!evt.dataTransfer) return;
 				evt.dataTransfer.effectAllowed = 'copy';
-				evt.dataTransfer.setData('application/x-patronen2026-image', String(it.id));
+        evt.dataTransfer.setData('application/x-ontwerpstudio2026-image', String(it.id));
 				evt.dataTransfer.setData('text/plain', String(it.id));
 			});
             btn.addEventListener('click', () => {
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = it.fileName || 'patronen2026.png';
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
+              this.selectedSavedImageId = String(it.id);
+              this.renderSavedImages();
             });
 
-            const del = document.createElement('button');
-            del.type = 'button';
-            del.className = 'saved-images__delete';
-            del.textContent = '×';
-            del.title = 'Verwijder afbeelding';
-            del.setAttribute('aria-label', 'Verwijder afbeelding');
-            del.draggable = false;
-            del.addEventListener('click', (evt) => {
-              evt.preventDefault();
-              evt.stopPropagation();
-              if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
-              this.savedImagesDB
-                .delete(String(it.id))
-                .then(() => {
-                  this.renderSavedImages();
-                })
-                .catch(() => {});
-            });
+            if (it && it.favorite) {
+              const fav = document.createElement('div');
+              fav.className = 'saved-images__favorite';
+              fav.textContent = '★';
+              fav.setAttribute('aria-hidden', 'true');
+              cell.appendChild(fav);
+            }
 
             cell.appendChild(btn);
-            cell.appendChild(del);
             this.savedImagesRoot.appendChild(cell);
           }
         })
         .catch(() => {
           this.savedImagesRoot.textContent = 'Kan opgeslagen afbeeldingen niet laden.';
         });
+    }
+
+    getSelectedSavedImageFromCache() {
+      const id = typeof this.selectedSavedImageId === 'string' ? this.selectedSavedImageId : '';
+      if (!id) return null;
+      const items = Array.isArray(this.savedImagesCache) ? this.savedImagesCache : [];
+      return items.find((it) => it && String(it.id) === String(id)) || null;
+    }
+
+    updateSavedImagesToolbarState() {
+      const it = this.getSelectedSavedImageFromCache();
+      const has = !!it;
+
+      if (this.deleteSavedImageBtn instanceof HTMLButtonElement) {
+        this.deleteSavedImageBtn.disabled = !has;
+      }
+      if (this.downloadSavedImageBtn instanceof HTMLButtonElement) {
+        this.downloadSavedImageBtn.disabled = !has;
+      }
+      if (this.favoriteSavedImageBtn instanceof HTMLButtonElement) {
+        this.favoriteSavedImageBtn.disabled = !has;
+        if (has && it && it.favorite) this.favoriteSavedImageBtn.textContent = 'Favoriet uit';
+        else this.favoriteSavedImageBtn.textContent = 'Favoriet maken';
+      }
+    }
+
+    deleteSelectedSavedImage() {
+      const it = this.getSelectedSavedImageFromCache();
+      if (!it) return;
+      this.savedImagesDB
+        .delete(String(it.id))
+        .then(() => {
+          this.selectedSavedImageId = '';
+          this.renderSavedImages();
+        })
+        .catch(() => {});
+    }
+
+    downloadSelectedSavedImage() {
+      const it = this.getSelectedSavedImageFromCache();
+      if (!it) return;
+
+      this.savedImagesDB
+        .get(String(it.id))
+        .then((record) => {
+          if (!record || !(record.blob instanceof Blob)) return;
+          const url = URL.createObjectURL(record.blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = record.fileName || 'ontwerpstudio-2026.png';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.setTimeout(() => {
+            try {
+              URL.revokeObjectURL(url);
+            } catch (_) {}
+          }, 0);
+        })
+        .catch(() => {});
+    }
+
+    toggleFavoriteSelectedSavedImage() {
+      const it = this.getSelectedSavedImageFromCache();
+      if (!it) return;
+
+      this.savedImagesDB
+        .get(String(it.id))
+        .then((record) => {
+          if (!record || typeof record.id !== 'string') return;
+          record.favorite = !record.favorite;
+          return this.savedImagesDB.put(record);
+        })
+        .then(() => {
+          this.renderSavedImages();
+        })
+        .catch(() => {});
     }
 
     initShapeActions() {
@@ -2294,7 +2571,7 @@
             btn.addEventListener('dragstart', (evt) => {
               if (!evt.dataTransfer) return;
               evt.dataTransfer.effectAllowed = 'copy';
-              evt.dataTransfer.setData('application/x-patronen2026-shape', String(it.id));
+              evt.dataTransfer.setData('application/x-ontwerpstudio2026-shape', String(it.id));
               evt.dataTransfer.setData('text/plain', String(it.id));
             });
             btn.addEventListener('click', () => {
@@ -2557,7 +2834,7 @@
 
       const concept = this.getConceptValue();
       const description = this.getDescriptionValue();
-      const stem = this.sanitizeFileStem(concept) || 'patronen2026';
+      const stem = this.sanitizeFileStem(concept) || 'ontwerpstudio-2026';
       const fileName = `${stem}.png`;
 
       const saveBlob = (blob) => {
@@ -2571,6 +2848,7 @@
           fileName,
           concept,
           description,
+          favorite: false,
           blob,
         };
 
@@ -3244,7 +3522,7 @@
       if (!dt) return;
 
       // Shapes
-      const shapeId = dt.getData('application/x-patronen2026-shape');
+    	const shapeId = dt.getData('application/x-ontwerpstudio2026-shape');
       const shapeKey = typeof shapeId === 'string' ? shapeId.trim() : '';
       if (shapeKey) {
         const rect = overlay.getBoundingClientRect();
@@ -3271,7 +3549,7 @@
         return;
       }
 
-      const imageId = dt.getData('application/x-patronen2026-image') || dt.getData('text/plain');
+    	const imageId = dt.getData('application/x-ontwerpstudio2026-image') || dt.getData('text/plain');
       const id = typeof imageId === 'string' ? imageId.trim() : '';
       if (!id) return;
 

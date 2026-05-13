@@ -297,6 +297,21 @@
           })
       );
     }
+
+    delete(id) {
+      const key = typeof id === 'string' ? id : '';
+      if (!key) return Promise.resolve(false);
+      return this.open().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const tx = db.transaction(this.storeName, 'readwrite');
+            const store = tx.objectStore(this.storeName);
+            store.delete(key);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error || new Error('IndexedDB delete failed'));
+          })
+      );
+    }
   }
 
   class PanelsController {
@@ -1462,6 +1477,7 @@
       this.savedImagesRoot = qs('savedImages');
       this.savedShapesRoot = qs('savedShapes');
       this.saveShapeBtn = qs('saveShapeBtn');
+	  this.deleteShapeBtn = qs('deleteShapeBtn');
       this.canvas = qs('mainCanvas');
       this.compositionOverlay = qs('compositionOverlay');
       this.layersRoot = qs('layersRoot');
@@ -1500,6 +1516,8 @@
 	  this.layerThumbObjectUrls = [];
     this.selectedSavedImageId = '';
     this.savedImagesCache = [];
+	  this.selectedSavedShapeId = '';
+	  this.savedShapesCache = [];
       this.selectedCompositionId = '';
 
       this.patterns = [
@@ -1706,6 +1724,13 @@
       this.preview.addEventListener('click', () => {
         const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
         const selected = this.getSelectedLayerIndices();
+
+    // Pending composite shape placement (from saved group)
+    const hasActiveGroup = Array.isArray(this.activeClipPathsN) && this.activeClipPathsN.length > 0;
+    if (hasActiveGroup) {
+      this.applyToActiveShapeGroup();
+      return;
+    }
 
         // If the user selected multiple layers (Shift+click), actions apply to the group.
         // This takes precedence over "active shape" behavior.
@@ -2808,6 +2833,63 @@
       if (this.saveShapeBtn && this.saveShapeBtn.dataset.bound !== '1') {
         this.saveShapeBtn.dataset.bound = '1';
         this.saveShapeBtn.addEventListener('click', () => {
+          const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+          const selectedSet = new Set(this.getSelectedLayerIndices());
+          if (Number.isFinite(this.activeLayerIndex) && this.activeLayerIndex >= 0) selectedSet.add(this.activeLayerIndex);
+          const selected = Array.from(selectedSet);
+          const selectedClipIndices = selected.filter((i) => {
+            const layer = layers[i];
+            return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+          });
+
+          // If multiple shapes are selected, save them as one composite group.
+          if (selectedClipIndices.length >= 2) {
+            const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const clipPathsN = [];
+            const clipKeys = new Set();
+            for (const idx of selectedClipIndices) {
+              const layer = layers[idx];
+              if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+              const poly = layer.clipPathN.map((p) => [Number(p[0]), Number(p[1])]).filter((p) => Array.isArray(p) && p.length === 2);
+              if (poly.length < 3) continue;
+              clipPathsN.push(poly);
+
+              const key = typeof layer.clipKey === 'string' && layer.clipKey ? layer.clipKey : this.makeClipKey(poly);
+              if (key) clipKeys.add(String(key));
+            }
+
+            // If there is also a free (non-layer) active selection, include it.
+            const hasActiveFree = !(Number.isFinite(this.activeLayerIndex) && this.activeLayerIndex >= 0)
+              && Array.isArray(this.activeClipPathN)
+              && this.activeClipPathN.length >= 3;
+            if (hasActiveFree) {
+              const poly = this.activeClipPathN
+                .map((p) => (Array.isArray(p) && p.length >= 2 ? [Number(p[0]), Number(p[1])] : null))
+                .filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+              if (poly.length >= 3) {
+                const key = this.activeClipKey || this.makeClipKey(poly);
+                if (!key || !clipKeys.has(String(key))) {
+                  clipPathsN.push(poly);
+                  if (key) clipKeys.add(String(key));
+                }
+              }
+            }
+
+            const groupKey = JSON.stringify(clipPathsN);
+            const record = {
+              id,
+              createdAt: Date.now(),
+              kind: 'group',
+              clipPathsN,
+              clipKey: groupKey,
+            };
+
+            this.savedShapesDB.put(record).catch(() => {});
+            if (this.rightView === 'shapes') this.renderSavedShapes();
+            return;
+          }
+
+          // Single active shape (free selection)
           const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
           if (!hasActive) return;
           const clipKey = this.activeClipKey || this.makeClipKey(this.activeClipPathN);
@@ -2817,6 +2899,7 @@
           const record = {
             id,
             createdAt: Date.now(),
+            kind: 'single',
             clipPathN: this.activeClipPathN.map((p) => [Number(p[0]), Number(p[1])]),
             clipKey,
           };
@@ -2825,6 +2908,13 @@
           if (this.rightView === 'shapes') this.renderSavedShapes();
         });
       }
+
+    if (this.deleteShapeBtn && this.deleteShapeBtn.dataset.bound !== '1') {
+      this.deleteShapeBtn.dataset.bound = '1';
+      this.deleteShapeBtn.addEventListener('click', () => {
+        this.deleteSelectedSavedShape();
+      });
+    }
     }
 
     placeClipPathNAt(clipPathN, targetCxN, targetCyN) {
@@ -2866,6 +2956,52 @@
       return next.length >= 3 ? next : null;
     }
 
+  placeClipPathsNAt(clipPathsN, targetCxN, targetCyN) {
+    if (!Array.isArray(clipPathsN) || clipPathsN.length === 0) return null;
+    const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const poly of clipPathsN) {
+      if (!Array.isArray(poly) || poly.length < 3) continue;
+      for (const p of poly) {
+        if (!Array.isArray(p) || p.length < 2) continue;
+        const x = clamp01(Number(p[0]));
+        const y = clamp01(Number(p[1]));
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    let dx = clamp01(Number(targetCxN)) - cx;
+    let dy = clamp01(Number(targetCyN)) - cy;
+
+    // Clamp translation to keep all polygons fully inside 0..1.
+    const minDx = -minX;
+    const maxDx = 1 - maxX;
+    const minDy = -minY;
+    const maxDy = 1 - maxY;
+    dx = Math.max(minDx, Math.min(maxDx, dx));
+    dy = Math.max(minDy, Math.min(maxDy, dy));
+
+    const out = [];
+    for (const poly of clipPathsN) {
+      if (!Array.isArray(poly) || poly.length < 3) continue;
+      const nextPoly = poly
+        .map((p) => [clamp01(Number(p[0]) + dx), clamp01(Number(p[1]) + dy)])
+        .filter((p) => Array.isArray(p) && p.length === 2);
+      if (nextPoly.length >= 3) out.push(nextPoly);
+    }
+    return out.length ? out : null;
+  }
+
     clipPathNToPreviewDataUrl(clipPathN) {
       if (!Array.isArray(clipPathN) || clipPathN.length < 3) return '';
       const clamp01 = (n) => Math.max(0, Math.min(1, n));
@@ -2881,6 +3017,26 @@
       return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
     }
 
+  clipPathsNToPreviewDataUrl(clipPathsN) {
+    if (!Array.isArray(clipPathsN) || clipPathsN.length === 0) return '';
+    const clamp01 = (n) => Math.max(0, Math.min(1, n));
+    const polys = [];
+    for (const poly of clipPathsN) {
+      if (!Array.isArray(poly) || poly.length < 3) continue;
+      const pts = poly
+        .map((p) => {
+          const x = Math.round(clamp01(Number(p[0])) * 1000) / 10;
+          const y = Math.round(clamp01(Number(p[1])) * 1000) / 10;
+          return `${x},${y}`;
+        })
+        .join(' ');
+      polys.push(`<polygon points="${pts}" fill="none" stroke="#000" stroke-width="2"/>`);
+    }
+    if (polys.length === 0) return '';
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="none"/>${polys.join('')}</svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  }
+
     renderSavedShapes() {
       if (!(this.savedShapesRoot instanceof HTMLElement)) return;
       this.savedShapesRoot.innerHTML = '';
@@ -2889,8 +3045,19 @@
         .getAll()
         .then((items) => {
           const sorted = items
-            .filter((it) => it && typeof it.id === 'string' && Array.isArray(it.clipPathN) && it.clipPathN.length >= 3)
+            .filter((it) => {
+				if (!it || typeof it.id !== 'string') return false;
+				if (Array.isArray(it.clipPathN) && it.clipPathN.length >= 3) return true;
+				if (Array.isArray(it.clipPathsN) && it.clipPathsN.some((p) => Array.isArray(p) && p.length >= 3)) return true;
+				return false;
+			})
             .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+
+          this.savedShapesCache = sorted;
+          if (this.selectedSavedShapeId && !sorted.some((it) => String(it.id) === String(this.selectedSavedShapeId))) {
+            this.selectedSavedShapeId = '';
+          }
+          this.updateSavedShapesToolbarState();
 
           if (sorted.length === 0) {
             this.savedShapesRoot.textContent = 'Nog geen opgeslagen vormen.';
@@ -2902,7 +3069,12 @@
             btn.type = 'button';
             btn.className = 'saved-shapes__item';
             btn.setAttribute('aria-label', 'Opgeslagen vorm');
-            btn.style.backgroundImage = `url("${this.clipPathNToPreviewDataUrl(it.clipPathN)}")`;
+			const isGroup = Array.isArray(it.clipPathsN) && it.clipPathsN.length;
+			btn.style.backgroundImage = isGroup
+				? `url("${this.clipPathsNToPreviewDataUrl(it.clipPathsN)}")`
+				: `url("${this.clipPathNToPreviewDataUrl(it.clipPathN)}")`;
+      const isSelected = String(it.id) === String(this.selectedSavedShapeId);
+      if (isSelected) btn.classList.add('is-selected');
             btn.draggable = true;
             btn.dataset.shapeId = it.id;
             btn.addEventListener('dragstart', (evt) => {
@@ -2912,12 +3084,35 @@
               evt.dataTransfer.setData('text/plain', String(it.id));
             });
             btn.addEventListener('click', () => {
-              const next = this.placeClipPathNAt(it.clipPathN, 0.5, 0.5) || it.clipPathN;
-              this.activeClipPathN = next;
-              this.activeClipKey = typeof it.clipKey === 'string' && it.clipKey ? it.clipKey : this.makeClipKey(next);
-              this.setActiveLayerIndex(-1);
-              this.toolMode = 'draw';
-              if (this.drawOverlay) this.drawOverlay.style.cursor = 'crosshair';
+              const id = String(it.id);
+              const wasSelected = id === String(this.selectedSavedShapeId);
+              this.selectedSavedShapeId = id;
+
+              // First tap selects (so you can delete). Second tap places on canvas.
+              if (!wasSelected) {
+                this.renderSavedShapes();
+                return;
+              }
+
+              if (Array.isArray(it.clipPathsN) && it.clipPathsN.length) {
+				const nextGroup = this.placeClipPathsNAt(it.clipPathsN, 0.5, 0.5) || it.clipPathsN;
+				this.activeClipPathsN = nextGroup;
+				this.activeClipPathN = null;
+				this.activeClipKey = typeof it.clipKey === 'string' && it.clipKey ? it.clipKey : '';
+
+                this.setInteractionMode('select');
+                this.applyToActiveShapeGroup();
+			  } else {
+				const next = this.placeClipPathNAt(it.clipPathN, 0.5, 0.5) || it.clipPathN;
+				this.activeClipPathN = next;
+				this.activeClipPathsN = null;
+				this.activeClipKey = typeof it.clipKey === 'string' && it.clipKey ? it.clipKey : this.makeClipKey(next);
+
+                this.setInteractionMode('select');
+                this.applyToActiveShape();
+			  }
+
+              this.renderSavedShapes();
               if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
               this.renderLayersList();
             });
@@ -2927,6 +3122,33 @@
         .catch(() => {
           this.savedShapesRoot.textContent = 'Kan opgeslagen vormen niet laden.';
         });
+    }
+
+    getSelectedSavedShapeFromCache() {
+      const id = typeof this.selectedSavedShapeId === 'string' ? this.selectedSavedShapeId : '';
+      if (!id) return null;
+      const items = Array.isArray(this.savedShapesCache) ? this.savedShapesCache : [];
+      return items.find((it) => it && String(it.id) === String(id)) || null;
+    }
+
+    updateSavedShapesToolbarState() {
+      const it = this.getSelectedSavedShapeFromCache();
+      const has = !!it;
+      if (this.deleteShapeBtn instanceof HTMLButtonElement) {
+        this.deleteShapeBtn.disabled = !has;
+      }
+    }
+
+    deleteSelectedSavedShape() {
+      const it = this.getSelectedSavedShapeFromCache();
+      if (!it) return;
+      this.savedShapesDB
+        .delete(String(it.id))
+        .then(() => {
+          this.selectedSavedShapeId = '';
+          if (this.rightView === 'shapes') this.renderSavedShapes();
+        })
+        .catch(() => {});
     }
 
     initImageActions() {
@@ -3268,9 +3490,65 @@
         .catch(() => {});
     }
 
+  applyToActiveShapeGroup() {
+    const clipPathsN = Array.isArray(this.activeClipPathsN) ? this.activeClipPathsN : null;
+    if (!clipPathsN || clipPathsN.length === 0) return;
+
+    const cleaned = clipPathsN
+      .map((poly) => {
+        if (!Array.isArray(poly) || poly.length < 3) return null;
+        const out = poly
+          .map((p) => (Array.isArray(p) && p.length >= 2 ? [Number(p[0]), Number(p[1])] : null))
+          .filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+        return out.length >= 3 ? out : null;
+      })
+      .filter(Boolean);
+    if (cleaned.length === 0) return;
+
+    const groupId = `group-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const indices = [];
+
+    for (const poly of cleaned) {
+      const clipKey = this.makeClipKey(poly);
+      if (!clipKey) continue;
+      let idx = -1;
+      if (this.currentFile) {
+        idx = this.canvasLayers.addClippedLayer(
+          this.currentFile,
+          this.getRepeatCount(),
+          this.currentColor,
+          this.getThickness(),
+          poly,
+          this.currentTileScaleMode,
+          clipKey
+        );
+      } else {
+        idx = this.canvasLayers.addClippedSolidLayer(this.currentColor, poly, clipKey);
+      }
+
+      if (Number.isFinite(idx) && idx >= 0) {
+        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+        const layer = layers[idx];
+        if (layer) layer.groupId = groupId;
+        indices.push(idx);
+      }
+    }
+
+    if (indices.length === 0) return;
+
+    this.selectedLayerIndices = new Set(indices);
+    const activeIdx = indices[0];
+    this.setActiveLayerIndex(activeIdx);
+    this.syncActiveShapeToLayerIndex(activeIdx);
+    this.renderLayersList();
+  }
+
     syncActiveShapeToLayerIndex(layerIndex) {
       const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
       const layer = layers[layerIndex];
+
+	  // A layer-driven selection overrides any pending multi-clip (saved group) placement.
+	  this.activeClipPathsN = null;
 
       if (layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3) {
         this.activeClipPathN = layer.clipPathN.slice();
@@ -3292,9 +3570,23 @@
         return;
       }
 
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const layer = layers[idx];
+    const groupId = layer && typeof layer.groupId === 'string' && layer.groupId.trim() ? layer.groupId.trim() : '';
+
+    if (groupId) {
+      const groupIndices = [];
+      for (let i = 0; i < layers.length; i++) {
+        const l = layers[i];
+        if (l && typeof l.groupId === 'string' && l.groupId === groupId) groupIndices.push(i);
+      }
+      this.selectedLayerIndices = new Set(groupIndices.length ? groupIndices : [idx]);
+    } else {
       this.selectedLayerIndices = new Set([idx]);
-      this.setActiveLayerIndex(idx);
-      this.syncActiveShapeToLayerIndex(idx);
+    }
+
+    this.setActiveLayerIndex(idx);
+    this.syncActiveShapeToLayerIndex(idx);
     }
 
     toggleLayerSelection(layerIndex) {
@@ -3303,9 +3595,28 @@
       const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
       if (idx < 0 || idx >= n) return;
 
+    const layer = layers[idx];
+    const groupId = layer && typeof layer.groupId === 'string' && layer.groupId.trim() ? layer.groupId.trim() : '';
+    const groupIndices = [];
+    if (groupId) {
+      for (let i = 0; i < n; i++) {
+        const l = layers[i];
+        if (l && typeof l.groupId === 'string' && l.groupId === groupId) groupIndices.push(i);
+    		}
+    }
+
       const next = new Set(this.selectedLayerIndices);
+    if (groupId && groupIndices.length) {
+      const anySelected = groupIndices.some((i) => next.has(i));
+      if (anySelected) {
+        for (const i of groupIndices) next.delete(i);
+      } else {
+        for (const i of groupIndices) next.add(i);
+      }
+    } else {
       if (next.has(idx)) next.delete(idx);
       else next.add(idx);
+    }
 
       // Never allow ending up with no selected layers via toggling.
       // (Prevents deselect by clicking the checkbox off.)
@@ -3408,6 +3719,10 @@
       }
       const idx = Math.max(0, Math.min(n - 1, raw));
       this.activeLayerIndex = idx;
+
+      // Keep selection consistent with the UI highlight.
+      if (!(this.selectedLayerIndices instanceof Set)) this.selectedLayerIndices = new Set();
+      this.selectedLayerIndices.add(idx);
     }
 
     removeLayerIndex(layerIndex) {
@@ -3873,14 +4188,32 @@
         this.savedShapesDB
           .get(shapeKey)
           .then((rec) => {
-            if (!rec || !Array.isArray(rec.clipPathN) || rec.clipPathN.length < 3) return;
-            const next = this.placeClipPathNAt(rec.clipPathN, cxN, cyN) || rec.clipPathN;
-            this.activeClipPathN = next;
-            this.activeClipKey = typeof rec.clipKey === 'string' && rec.clipKey ? rec.clipKey : this.makeClipKey(next);
-            this.setActiveLayerIndex(-1);
-            this.toolMode = 'draw';
-            if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
-            this.renderLayersList();
+            if (!rec) return;
+			// Composite group shape
+			if (Array.isArray(rec.clipPathsN) && rec.clipPathsN.length) {
+				const nextGroup = this.placeClipPathsNAt(rec.clipPathsN, cxN, cyN) || rec.clipPathsN;
+				this.activeClipPathsN = nextGroup;
+				this.activeClipPathN = null;
+				this.activeClipKey = typeof rec.clipKey === 'string' && rec.clipKey ? rec.clipKey : '';
+
+        // Commit immediately as real layers so it persists and can be colored.
+        this.setInteractionMode('select');
+        this.applyToActiveShapeGroup();
+			} else {
+				if (!Array.isArray(rec.clipPathN) || rec.clipPathN.length < 3) return;
+				const next = this.placeClipPathNAt(rec.clipPathN, cxN, cyN) || rec.clipPathN;
+				this.activeClipPathN = next;
+				this.activeClipPathsN = null;
+				this.activeClipKey = typeof rec.clipKey === 'string' && rec.clipKey ? rec.clipKey : this.makeClipKey(next);
+
+        // Commit immediately as a real layer so it persists and can be colored.
+        this.setInteractionMode('select');
+        this.applyToActiveShape();
+			}
+
+      // Ensure overlay + list are in sync after placement.
+      if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+      this.renderLayersList();
           })
           .catch(() => {});
         return;
@@ -4121,6 +4454,67 @@
     return clipN.map((q) => [q[0] * w, q[1] * h]);
   };
 
+  const getClipBoundsPxForClipN = (clipN) => {
+    if (!Array.isArray(clipN) || clipN.length < 3) return null;
+    const { w, h } = getOverlaySize();
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const q of clipN) {
+      if (!Array.isArray(q) || q.length < 2) continue;
+      const x = Number(q[0]) * w;
+      const y = Number(q[1]) * h;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+    return { minX, minY, maxX, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+  };
+
+  const getSelectedClipBoundsPx = () => {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const selected = typeof this.getSelectedLayerIndices === 'function' ? this.getSelectedLayerIndices() : [];
+    const clips = [];
+    for (const idx of selected) {
+      const layer = layers[idx];
+      if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+      clips.push(layer.clipPathN);
+    }
+    if (clips.length === 0) return null;
+
+    const { w, h } = getOverlaySize();
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const clipN of clips) {
+      for (const q of clipN) {
+        if (!Array.isArray(q) || q.length < 2) continue;
+        const x = Number(q[0]) * w;
+        const y = Number(q[1]) * h;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+    return { minX, minY, maxX, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+  };
+
+  const getClipHandleAtPoint = (bounds, px, py) => {
+    if (!bounds) return '';
+    const hx = bounds.maxX;
+    const hy = bounds.maxY;
+    const r = 18;
+    return Math.hypot(px - hx, py - hy) <= r ? 'se' : '';
+  };
+
   const hitTestTopmostClipLayer = (px, py) => {
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     for (let i = layers.length - 1; i >= 0; i--) {
@@ -4170,36 +4564,60 @@
       if (!ctx) return;
       clearOverlay();
 
-      let points = null;
-      let shouldClose = false;
+    const rect = overlay.getBoundingClientRect();
+    const w = Math.max(1, rect.width);
+    const h = Math.max(1, rect.height);
 
-      if (this.isDrawing && Array.isArray(this.drawPath) && this.drawPath.length >= 2) {
-        points = this.drawPath;
-        shouldClose = false;
-      } else if (Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 2) {
-        const rect = overlay.getBoundingClientRect();
-        const w = Math.max(1, rect.width);
-        const h = Math.max(1, rect.height);
-        points = this.activeClipPathN.map((p) => [p[0] * w, p[1] * h]);
-        shouldClose = true;
-      }
+    const polys = [];
+    if (this.isDrawing && Array.isArray(this.drawPath) && this.drawPath.length >= 2) {
+    polys.push({ points: this.drawPath, close: false });
+    } else if (Array.isArray(this.activeClipPathsN) && this.activeClipPathsN.length) {
+    for (const polyN of this.activeClipPathsN) {
+      if (!Array.isArray(polyN) || polyN.length < 2) continue;
+      polys.push({ points: polyN.map((p) => [p[0] * w, p[1] * h]), close: true });
+    }
+    } else if (Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 2) {
+    polys.push({ points: this.activeClipPathN.map((p) => [p[0] * w, p[1] * h]), close: true });
+    }
 
-      if (points && points.length >= 2) {
+    if (polys.length) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = '#000000';
+    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const poly of polys) {
+      const points = poly.points;
+      if (!points || points.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(points[0][0], points[0][1]);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+      if (poly.close) ctx.closePath();
+      ctx.stroke();
+    }
+    ctx.restore();
+    }
+
+    // Shape resize handle (bottom-right of selection bounds)
+    if (this.interactionMode === 'select') {
+      const bounds = getSelectedClipBoundsPx() || (Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3 ? getClipBoundsPxForClipN(this.activeClipPathN) : null);
+      if (bounds) {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        ctx.strokeStyle = '#000000';
-        ctx.globalAlpha = 0.8;
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(bounds.maxX - 6, bounds.maxY - 6, 12, 12);
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(points[0][0], points[0][1]);
-        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
-        if (shouldClose) ctx.closePath();
-        ctx.stroke();
+        ctx.strokeRect(bounds.maxX - 6, bounds.maxY - 6, 12, 12);
         ctx.restore();
       }
+    }
 
     // Image selection outline (if active layer is an image-layer)
     if (this.activeLayerIndex >= 0) {
@@ -4312,6 +4730,43 @@
           this.renderLayersList();
           drawOverlayPath();
 
+      // Start resizing if the user grabbed the shape handle.
+      const handleBounds = getSelectedClipBoundsPx() || getClipBoundsPxForClipN(this.activeClipPathN);
+			const handle = getClipHandleAtPoint(handleBounds, p[0], p[1]);
+			if (handle) {
+				this.isResizingShape = true;
+				this.shapeResizePointerId = evt.pointerId;
+        this.shapeResizeLayerIndex = clipIdx;
+        // Multi-select support: scale all selected clip layers together.
+        const selectedIndices = typeof this.getSelectedLayerIndices === 'function' ? this.getSelectedLayerIndices() : [];
+        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+        this.shapeResizeTargetIndices = selectedIndices
+          .filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length)
+          .filter((i) => {
+            const layer = layers[i];
+            return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+          });
+        if (!Array.isArray(this.shapeResizeTargetIndices) || this.shapeResizeTargetIndices.length === 0) {
+          this.shapeResizeTargetIndices = [clipIdx];
+        }
+        this.shapeResizeStartClipByIndex = new Map();
+        for (const i of this.shapeResizeTargetIndices) {
+          const layer = layers[i];
+          if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+          this.shapeResizeStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
+        }
+				this.shapeResizeStartPos = p;
+				this.shapeResizeStartClipPathN = Array.isArray(this.activeClipPathN)
+					? this.activeClipPathN.map((q) => [q[0], q[1]])
+					: null;
+				this.shapeResizeStartBounds = handleBounds;
+				this.shapeResizeStartDist = handleBounds ? Math.max(0.000001, Math.hypot(p[0] - handleBounds.cx, p[1] - handleBounds.cy)) : 0.000001;
+				overlay.setPointerCapture(evt.pointerId);
+				overlay.style.cursor = 'nwse-resize';
+				evt.preventDefault();
+				return;
+			}
+
           // Start dragging the selected shape.
           const polyPx = getClipPolyPxForLayerIndex(clipIdx);
           if (polyPx && pointInPolygon(p[0], p[1], polyPx)) {
@@ -4322,6 +4777,20 @@
             this.dragStartClipPathN = Array.isArray(this.activeClipPathN)
               ? this.activeClipPathN.map((q) => [q[0], q[1]])
               : null;
+			// Multi-select: move all selected clip layers together.
+			const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+			const selected = this.getSelectedLayerIndices();
+			this.dragTargetIndices = selected.filter((i) => {
+				const layer = layers[i];
+				return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+			});
+			if (!Array.isArray(this.dragTargetIndices) || this.dragTargetIndices.length === 0) this.dragTargetIndices = [clipIdx];
+			this.dragStartClipByIndex = new Map();
+			for (const i of this.dragTargetIndices) {
+				const layer = layers[i];
+				if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+				this.dragStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
+			}
             this.dragPendingPos = p;
             overlay.setPointerCapture(evt.pointerId);
             overlay.style.cursor = 'grabbing';
@@ -4349,6 +4818,40 @@
       const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
       const canDragSelection = interactionMode === 'select' && hasActiveClip;
       if (canDragSelection) {
+    const handleBounds = getSelectedClipBoundsPx() || getClipBoundsPxForClipN(this.activeClipPathN);
+    const handle = getClipHandleAtPoint(handleBounds, p[0], p[1]);
+    if (handle) {
+      this.isResizingShape = true;
+      this.shapeResizePointerId = evt.pointerId;
+      this.shapeResizeLayerIndex = this.activeLayerIndex;
+      // Multi-select support: scale all selected clip layers together.
+      const selectedIndices = typeof this.getSelectedLayerIndices === 'function' ? this.getSelectedLayerIndices() : [];
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      this.shapeResizeTargetIndices = selectedIndices
+        .filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length)
+        .filter((i) => {
+          const layer = layers[i];
+          return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+        });
+      if (!Array.isArray(this.shapeResizeTargetIndices) || this.shapeResizeTargetIndices.length === 0) {
+        this.shapeResizeTargetIndices = [this.activeLayerIndex];
+      }
+      this.shapeResizeStartClipByIndex = new Map();
+      for (const i of this.shapeResizeTargetIndices) {
+        const layer = layers[i];
+        if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+        this.shapeResizeStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
+      }
+      this.shapeResizeStartPos = p;
+      this.shapeResizeStartClipPathN = this.activeClipPathN.map((q) => [q[0], q[1]]);
+      this.shapeResizeStartBounds = handleBounds;
+      this.shapeResizeStartDist = handleBounds ? Math.max(0.000001, Math.hypot(p[0] - handleBounds.cx, p[1] - handleBounds.cy)) : 0.000001;
+      overlay.setPointerCapture(evt.pointerId);
+      overlay.style.cursor = 'nwse-resize';
+      evt.preventDefault();
+      return;
+    }
+
         const { w, h } = getOverlaySize();
         const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
         if (pointInPolygon(p[0], p[1], polyPx)) {
@@ -4357,6 +4860,20 @@
           this.dragLayerIndex = this.activeLayerIndex;
           this.dragStartPos = p;
           this.dragStartClipPathN = this.activeClipPathN.map((q) => [q[0], q[1]]);
+      // Multi-select: move all selected clip layers together.
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      const selected = this.getSelectedLayerIndices();
+      this.dragTargetIndices = selected.filter((i) => {
+        const layer = layers[i];
+        return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+      });
+      if (!Array.isArray(this.dragTargetIndices) || this.dragTargetIndices.length === 0) this.dragTargetIndices = [this.activeLayerIndex];
+      this.dragStartClipByIndex = new Map();
+      for (const i of this.dragTargetIndices) {
+        const layer = layers[i];
+        if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+        this.dragStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
+      }
           this.dragPendingPos = p;
           overlay.setPointerCapture(evt.pointerId);
           overlay.style.cursor = 'grabbing';
@@ -4429,59 +4946,205 @@
             let dxN = dx / w;
             let dyN = dy / h;
 
-            // Clamp translation as a whole to avoid distorting the polygon.
-            let minX = Infinity;
-            let minY = Infinity;
-            let maxX = -Infinity;
-            let maxY = -Infinity;
-            for (const q of this.dragStartClipPathN) {
-              if (!Array.isArray(q) || q.length < 2) continue;
-              if (q[0] < minX) minX = q[0];
-              if (q[1] < minY) minY = q[1];
-              if (q[0] > maxX) maxX = q[0];
-              if (q[1] > maxY) maxY = q[1];
-            }
-            if ([minX, minY, maxX, maxY].every(Number.isFinite)) {
-              const minDx = -minX;
-              const maxDx = 1 - maxX;
-              const minDy = -minY;
-              const maxDy = 1 - maxY;
-              dxN = Math.max(minDx, Math.min(maxDx, dxN));
-              dyN = Math.max(minDy, Math.min(maxDy, dyN));
-            }
 
-            const nextClipN = this.dragStartClipPathN
-              .map((q) => [q[0] + dxN, q[1] + dyN])
-              .filter((q) => Array.isArray(q) && q.length === 2);
+      // Clamp translation against the global bounds of all moved shapes.
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      const movedIndices = Array.isArray(this.dragTargetIndices) && this.dragTargetIndices.length ? this.dragTargetIndices : [];
+      if (this.dragStartClipByIndex instanceof Map && movedIndices.length) {
+        for (const idx of movedIndices) {
+          const clipN = this.dragStartClipByIndex.get(idx);
+          if (!Array.isArray(clipN) || clipN.length < 3) continue;
+          for (const q of clipN) {
+            if (!Array.isArray(q) || q.length < 2) continue;
+            if (q[0] < minX) minX = q[0];
+            if (q[1] < minY) minY = q[1];
+            if (q[0] > maxX) maxX = q[0];
+            if (q[1] > maxY) maxY = q[1];
+          }
+        }
+      } else {
+        for (const q of this.dragStartClipPathN) {
+          if (!Array.isArray(q) || q.length < 2) continue;
+          if (q[0] < minX) minX = q[0];
+          if (q[1] < minY) minY = q[1];
+          if (q[0] > maxX) maxX = q[0];
+          if (q[1] > maxY) maxY = q[1];
+        }
+      }
 
-            if (nextClipN.length < 3) return;
+      if ([minX, minY, maxX, maxY].every(Number.isFinite)) {
+        const minDx = -minX;
+        const maxDx = 1 - maxX;
+        const minDy = -minY;
+        const maxDy = 1 - maxY;
+        dxN = Math.max(minDx, Math.min(maxDx, dxN));
+        dyN = Math.max(minDy, Math.min(maxDy, dyN));
+      }
 
-            const nextKey = this.makeClipKey(nextClipN);
-
-            if (this.dragLayerIndex >= 0) {
-              const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-              const layer = layers[this.dragLayerIndex];
-              if (!layer) return;
-
-              layer.clipPathN = nextClipN;
-              layer.clipKey = nextKey;
-              this.activeClipPathN = nextClipN.slice();
-              this.activeClipKey = nextKey;
-              this.canvasLayers.redrawAllLayers();
-              drawOverlayPath();
-              return;
-            }
-
-            // Free selection (no layer): move only the active selection.
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      let updatedActive = false;
+      if (this.dragStartClipByIndex instanceof Map && movedIndices.length) {
+        for (const idx of movedIndices) {
+          const layer = layers[idx];
+          const clipN = this.dragStartClipByIndex.get(idx);
+          if (!layer || !Array.isArray(clipN) || clipN.length < 3) continue;
+          const nextClipN = clipN
+            .map((q) => [q[0] + dxN, q[1] + dyN])
+            .filter((q) => Array.isArray(q) && q.length === 2);
+          if (nextClipN.length < 3) continue;
+          const nextKey = this.makeClipKey(nextClipN);
+          layer.clipPathN = nextClipN;
+          layer.clipKey = nextKey;
+          if (idx === this.dragLayerIndex || idx === this.activeLayerIndex) {
             this.activeClipPathN = nextClipN.slice();
             this.activeClipKey = nextKey;
-            drawOverlayPath();
+            updatedActive = true;
+          }
+        }
+
+        this.canvasLayers.redrawAllLayers();
+        drawOverlayPath();
+        return;
+      }
+
+      // Free selection (no layer): move only the active selection.
+      const nextClipN = this.dragStartClipPathN
+        .map((q) => [q[0] + dxN, q[1] + dyN])
+        .filter((q) => Array.isArray(q) && q.length === 2);
+      if (nextClipN.length < 3) return;
+      const nextKey = this.makeClipKey(nextClipN);
+      this.activeClipPathN = nextClipN.slice();
+      this.activeClipKey = nextKey;
+      drawOverlayPath();
           });
         }
 
         evt.preventDefault();
         return;
       }
+
+    if (this.isResizingShape) {
+      if (this.shapeResizePointerId !== evt.pointerId) return;
+      if (!Array.isArray(this.shapeResizeStartClipPathN) || this.shapeResizeStartClipPathN.length < 3) return;
+      const startBounds = this.shapeResizeStartBounds || getClipBoundsPxForClipN(this.shapeResizeStartClipPathN);
+      if (!startBounds) return;
+      const startDist = Number.isFinite(this.shapeResizeStartDist) ? this.shapeResizeStartDist : 0.000001;
+      const curDist = Math.max(0.000001, Math.hypot(p[0] - startBounds.cx, p[1] - startBounds.cy));
+      let factor = curDist / startDist;
+      if (!(Number.isFinite(factor) && factor > 0)) return;
+
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      const targets = Array.isArray(this.shapeResizeTargetIndices) && this.shapeResizeTargetIndices.length
+        ? this.shapeResizeTargetIndices
+        : [Number.isFinite(this.shapeResizeLayerIndex) ? this.shapeResizeLayerIndex : -1];
+
+      // Collect all start points to compute a shared center and global clamps.
+      const startClips = [];
+      for (const idx of targets) {
+        if (!(Number.isFinite(idx) && idx >= 0 && idx < layers.length)) continue;
+        const baseClip = this.shapeResizeStartClipByIndex instanceof Map ? this.shapeResizeStartClipByIndex.get(idx) : null;
+        if (Array.isArray(baseClip) && baseClip.length >= 3) startClips.push(baseClip);
+      }
+
+      // Fallback: free selection (no layer)
+      if (startClips.length === 0) startClips.push(this.shapeResizeStartClipPathN);
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const clipN of startClips) {
+        if (!Array.isArray(clipN) || clipN.length < 3) continue;
+        for (const q of clipN) {
+          if (!Array.isArray(q) || q.length < 2) continue;
+          const x = Number(q[0]);
+          const y = Number(q[1]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+
+      if (![minX, minY, maxX, maxY].every(Number.isFinite)) return;
+      const cxN = (minX + maxX) / 2;
+      const cyN = (minY + maxY) / 2;
+      const curW = Math.max(0.000001, maxX - minX);
+      const curH = Math.max(0.000001, maxY - minY);
+
+      const minDim = 0.03;
+      const minFactor = Math.max(minDim / curW, minDim / curH);
+      if (factor < minFactor) factor = minFactor;
+
+      if (factor > 1) {
+        let maxFactor = Infinity;
+        for (const clipN of startClips) {
+          if (!Array.isArray(clipN) || clipN.length < 3) continue;
+          for (const q of clipN) {
+            if (!Array.isArray(q) || q.length < 2) continue;
+            const dx = Number(q[0]) - cxN;
+            const dy = Number(q[1]) - cyN;
+            if (!Number.isFinite(dx) || !Number.isFinite(dy)) continue;
+            if (dx > 0) maxFactor = Math.min(maxFactor, (1 - cxN) / dx);
+            else if (dx < 0) maxFactor = Math.min(maxFactor, (0 - cxN) / dx);
+            if (dy > 0) maxFactor = Math.min(maxFactor, (1 - cyN) / dy);
+            else if (dy < 0) maxFactor = Math.min(maxFactor, (0 - cyN) / dy);
+          }
+        }
+        if (Number.isFinite(maxFactor) && maxFactor > 0) factor = Math.min(factor, maxFactor);
+      }
+
+      let changedAny = false;
+      for (const idx of targets) {
+        if (!(Number.isFinite(idx) && idx >= 0 && idx < layers.length)) continue;
+        const layer = layers[idx];
+        if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+        const baseClip = this.shapeResizeStartClipByIndex instanceof Map ? this.shapeResizeStartClipByIndex.get(idx) : null;
+        const startClip = Array.isArray(baseClip) && baseClip.length >= 3 ? baseClip : layer.clipPathN;
+
+        const nextClipN = startClip
+          .map((q) => [clamp01(cxN + (Number(q[0]) - cxN) * factor), clamp01(cyN + (Number(q[1]) - cyN) * factor)])
+          .filter((q) => Array.isArray(q) && q.length === 2);
+        if (nextClipN.length < 3) continue;
+
+        const nextKey = this.makeClipKey(nextClipN);
+        layer.clipPathN = nextClipN;
+        layer.clipKey = nextKey;
+        changedAny = true;
+        if (typeof this.canvasLayers.scheduleVisibleColorsCompute === 'function') {
+          this.canvasLayers.scheduleVisibleColorsCompute(idx).catch(() => {});
+        }
+
+        if (idx === this.activeLayerIndex || idx === this.shapeResizeLayerIndex) {
+          this.activeClipPathN = nextClipN.slice();
+          this.activeClipKey = nextKey;
+        }
+      }
+
+      if (!changedAny && Array.isArray(this.shapeResizeStartClipPathN) && this.shapeResizeStartClipPathN.length >= 3) {
+        const nextClipN = this.shapeResizeStartClipPathN
+          .map((q) => [clamp01(cxN + (Number(q[0]) - cxN) * factor), clamp01(cyN + (Number(q[1]) - cyN) * factor)])
+          .filter((q) => Array.isArray(q) && q.length === 2);
+        if (nextClipN.length >= 3) {
+          const nextKey = this.makeClipKey(nextClipN);
+          this.activeClipPathN = nextClipN.slice();
+          this.activeClipKey = nextKey;
+          changedAny = true;
+        }
+      }
+
+      if (changedAny) {
+        this.canvasLayers.redrawAllLayers();
+        this.renderLayersList();
+        drawOverlayPath();
+      }
+      evt.preventDefault();
+      return;
+    }
 
     if (this.isDraggingImage) {
     if (this.imagePointerId !== evt.pointerId) return;
@@ -4559,10 +5222,12 @@
 		}
 	  }
 
-      if (this.activeLayerIndex >= 0 && hasActiveClip) {
+  		if (this.interactionMode === 'select' && this.activeLayerIndex >= 0 && hasActiveClip) {
         const { w, h } = getOverlaySize();
         const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
-        overlay.style.cursor = pointInPolygon(p[0], p[1], polyPx) ? 'move' : 'crosshair';
+  		const bounds = getSelectedClipBoundsPx() || getClipBoundsPxForClipN(this.activeClipPathN);
+    const handle = getClipHandleAtPoint(bounds, p[0], p[1]);
+    overlay.style.cursor = handle ? 'nwse-resize' : pointInPolygon(p[0], p[1], polyPx) ? 'move' : 'crosshair';
       } else {
         overlay.style.cursor = 'crosshair';
       }
@@ -4616,6 +5281,8 @@
         this.dragStartPos = null;
         this.dragStartClipPathN = null;
         this.dragPendingPos = null;
+		this.dragTargetIndices = null;
+		this.dragStartClipByIndex = null;
         if (this.dragRaf) {
           window.cancelAnimationFrame(this.dragRaf);
           this.dragRaf = 0;
@@ -4624,6 +5291,22 @@
         evt.preventDefault();
         return;
       }
+
+    if (this.isResizingShape) {
+      if (this.shapeResizePointerId !== evt.pointerId) return;
+      this.isResizingShape = false;
+      this.shapeResizePointerId = null;
+      this.shapeResizeLayerIndex = -1;
+      this.shapeResizeStartPos = null;
+      this.shapeResizeStartClipPathN = null;
+      this.shapeResizeStartBounds = null;
+      this.shapeResizeStartDist = 0;
+      this.shapeResizeTargetIndices = null;
+      this.shapeResizeStartClipByIndex = null;
+      overlay.style.cursor = 'crosshair';
+      evt.preventDefault();
+      return;
+    }
 
     if (this.isDraggingImage) {
     if (this.imagePointerId !== evt.pointerId) return;
@@ -4786,6 +5469,63 @@
     if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
   }
 
+  applyPickedColorToActiveShapes(picked) {
+    const color = typeof picked === 'string' ? picked.trim() : '';
+    if (!color) return;
+
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const selectedSet = new Set(this.getSelectedLayerIndices());
+    if (Number.isFinite(this.activeLayerIndex) && this.activeLayerIndex >= 0) selectedSet.add(this.activeLayerIndex);
+    const selected = Array.from(selectedSet);
+
+    let changedAny = false;
+    for (const idx of selected) {
+      const layer = layers[idx];
+      if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
+      const paints = Array.isArray(layer.paints) ? layer.paints : [];
+      let changed = false;
+      for (const paint of paints) {
+        if (!paint) continue;
+        if (paint.kind === 'image') continue;
+		// Any non-image paint should accept a new working color.
+		// (Renderer treats paints without `file` as solid; patterns also use `color`.)
+		paint.color = color;
+		changed = true;
+      }
+
+	  // Legacy layers: older records store pattern/solid props directly on the layer.
+	  // The renderer treats missing/empty paints as a single paint derived from layer.* fields.
+	  if (!changed && (!Array.isArray(layer.paints) || layer.paints.length === 0)) {
+		  // Only recolor if the layer is actually a drawable (not image-only) layer.
+		  const isImageOnly = Array.isArray(layer.paints) && layer.paints.some((p) => p && p.kind === 'image');
+		  if (!isImageOnly) {
+			  layer.color = color;
+			  changed = true;
+		  }
+	  }
+
+      if (changed) {
+        changedAny = true;
+        if (typeof this.canvasLayers.addOptimisticVisibleColor === 'function') {
+          this.canvasLayers.addOptimisticVisibleColor(layer, color);
+        }
+        if (typeof this.canvasLayers.scheduleVisibleColorsCompute === 'function') {
+          this.canvasLayers.scheduleVisibleColorsCompute(idx);
+        }
+      }
+    }
+
+    if (changedAny) {
+      this.canvasLayers.redrawAllLayers();
+      this.renderLayersList();
+      return;
+    }
+
+    // Fallback: if a free (not-yet-layer) active shape exists, apply the color to it.
+    const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
+    if (hasActive) this.applyToActiveShape();
+  }
+
   initColorMixCanvasControl() {
     const canvases = [this.colorMixCanvas, this.colorMixCanvasPatterns, this.colorMixCanvasShapes].filter(
       (c) => c instanceof HTMLCanvasElement
@@ -4806,6 +5546,7 @@
         if (y >= 0 && y < 30) {
           const picked = x < w / 2 ? '#ffffff' : '#000000';
           this.setCurrentColor(picked);
+		  if (canvas === this.colorMixCanvasShapes) this.applyPickedColorToActiveShapes(picked);
           return;
         }
 
@@ -4818,7 +5559,10 @@
         const colors = this.colorBarColors && Array.isArray(this.colorBarColors[key]) ? this.colorBarColors[key] : [];
         const idx = this.colorBarSelectedIndex && Number.isFinite(this.colorBarSelectedIndex[key]) ? this.colorBarSelectedIndex[key] : -1;
         const picked = idx >= 0 && idx < colors.length ? colors[idx] : '';
-        if (picked) this.setCurrentColor(picked);
+		if (picked) {
+			this.setCurrentColor(picked);
+			if (canvas === this.colorMixCanvasShapes) this.applyPickedColorToActiveShapes(picked);
+		}
       });
     }
   }

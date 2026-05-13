@@ -2483,7 +2483,17 @@
           }
         }
 
+        // Group-apply touches multiple layers; force a full redraw.
+        this.canvasLayers.redrawAllLayers();
         this.renderLayersList();
+
+        const token = ++this.visibleColorsRenderToken;
+        Promise.all(selected.map((i) => this.canvasLayers.getLatestVisibleColorsPromise(i).catch(() => {})))
+          .then(() => {
+            if (token !== this.visibleColorsRenderToken) return;
+            this.renderLayersList();
+          })
+          .catch(() => {});
         return;
       }
 

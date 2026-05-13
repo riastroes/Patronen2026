@@ -1532,6 +1532,9 @@
         this.clearConceptBtn.dataset.bound = '1';
         this.clearConceptBtn.addEventListener('click', () => {
           this.clearConceptDescriptionStorageAndFields();
+
+          // Clearing concept also resets the working canvas.
+          this.resetToStart();
         });
       }
 

@@ -2471,15 +2471,24 @@
 
       const selected = Array.from(this.selectedLayerIndices || []).filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length);
       if (selected.length > 0) {
+        const c = typeof this.currentColor === 'string' && this.currentColor.trim() ? this.currentColor.trim() : '#000000';
+        const clippedTouched = [];
+
         for (const idx of selected) {
           const layer = layers[idx];
-          const hasClip = layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+          if (!layer) continue;
+          if (!Array.isArray(layer.paints)) layer.paints = [];
+
+          const hasClip = Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+          layer.paints.push({ kind: 'solid', file: null, color: c });
+
           if (hasClip) {
-            const clipPathN = layer.clipPathN;
-            const clipKey = typeof layer.clipKey === 'string' && layer.clipKey ? layer.clipKey : this.makeClipKey(clipPathN);
-            this.canvasLayers.addClippedSolidLayer(this.currentColor, clipPathN, clipKey);
+            if (typeof this.canvasLayers.addOptimisticVisibleColor === 'function') {
+              this.canvasLayers.addOptimisticVisibleColor(layer, c);
+            }
+            clippedTouched.push(idx);
           } else {
-            this.canvasLayers.addSolidPaintToLayerIndex(idx, this.currentColor);
+            layer.visibleColors = [c];
           }
         }
 
@@ -2488,6 +2497,11 @@
         this.renderLayersList();
 
         const token = ++this.visibleColorsRenderToken;
+        for (const idx of clippedTouched) {
+          if (typeof this.canvasLayers.scheduleVisibleColorsCompute === 'function') {
+            this.canvasLayers.scheduleVisibleColorsCompute(idx).catch(() => {});
+          }
+        }
         Promise.all(selected.map((i) => this.canvasLayers.getLatestVisibleColorsPromise(i).catch(() => {})))
           .then(() => {
             if (token !== this.visibleColorsRenderToken) return;

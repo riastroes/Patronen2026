@@ -1921,18 +1921,72 @@
             doc.setFontSize(12);
             doc.text('Nog geen opgeslagen afbeeldingen.', margin, y + 10);
           } else {
+            // Prepare data URLs once (used for thumbnails + full pages).
+            const prepared = [];
             for (const it of sorted) {
               const dataUrl = await this.blobToDataUrl(it.blob).catch(() => '');
               if (!dataUrl) continue;
-
               const iw = Math.max(1, Number(it.w) || 1);
               const ih = Math.max(1, Number(it.h) || 1);
+              prepared.push({ it, dataUrl, iw, ih });
+            }
+
+            // 1) First page: thumbnail overview.
+            const cols = 3;
+            const gutter = 10;
+            const cellW = (maxW - gutter * (cols - 1)) / cols;
+            const cellH = cellW; // square cells for consistent thumbnails
+
+            let tx = margin;
+            let ty = y;
+            let col = 0;
+
+            const ensureThumbSpace = () => {
+              if (ty + cellH > pageH - margin) {
+                doc.addPage();
+                tx = margin;
+                ty = margin;
+                col = 0;
+              }
+            };
+
+            for (const p of prepared) {
+              ensureThumbSpace();
+
+              const fitW = cellW;
+              const fitH = cellH;
+              let drawW = fitW;
+              let drawH = (drawW * p.ih) / p.iw;
+              if (drawH > fitH) {
+                drawH = fitH;
+                drawW = (drawH * p.iw) / p.ih;
+              }
+
+              const ox = tx + (fitW - drawW) / 2;
+              const oy = ty + (fitH - drawH) / 2;
+              doc.addImage(p.dataUrl, 'PNG', ox, oy, drawW, drawH);
+
+              col += 1;
+              if (col >= cols) {
+                col = 0;
+                tx = margin;
+                ty += cellH + gutter;
+              } else {
+                tx += cellW + gutter;
+              }
+            }
+
+            // 2) Following pages: full-size images.
+            doc.addPage();
+            y = margin;
+
+            for (const p of prepared) {
               let drawW = maxW;
-              let drawH = (drawW * ih) / iw;
+              let drawH = (drawW * p.ih) / p.iw;
 
               const availableH = pageH - margin - y;
               if (drawH > availableH) {
-                if (y > margin + 60) {
+                if (y > margin + 20) {
                   doc.addPage();
                   y = margin;
                 }
@@ -1941,10 +1995,10 @@
               const availableH2 = pageH - margin - y;
               if (drawH > availableH2) {
                 drawH = Math.max(1, availableH2);
-                drawW = (drawH * iw) / ih;
+                drawW = (drawH * p.iw) / p.ih;
               }
 
-              doc.addImage(dataUrl, 'PNG', margin, y, drawW, drawH);
+              doc.addImage(p.dataUrl, 'PNG', margin, y, drawW, drawH);
               y += drawH + 16;
             }
           }

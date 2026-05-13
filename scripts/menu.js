@@ -1388,6 +1388,7 @@
     this.colorBarComplement = qs('colorBarComplement');
     this.colorBarSupportA = qs('colorBarSupportA');
     this.colorBarSupportB = qs('colorBarSupportB');
+    this.colorMixCanvas = qs('colorMixCanvas');
 	  this.thickness = qs('patternThickness');
 	  this.thicknessValue = qs('patternThicknessValue');
       this.tileScaleToShape = qs('tileScaleToShape');
@@ -1478,6 +1479,10 @@
 
       this.pendingGroupParamRaf = 0;
       this.pendingGroupPatternParams = null;
+
+	  this.colorBarSteps = 16;
+	  this.colorBarColors = { primary: [], complement: [], supportA: [], supportB: [] };
+	  this.colorBarSelectedIndex = { primary: -1, complement: -1, supportA: -1, supportB: -1 };
     }
 
     init() {
@@ -3700,15 +3705,105 @@
   renderColorBar(el, baseHsl, alpha) {
     if (!(el instanceof HTMLElement)) return;
     el.innerHTML = '';
-    const steps = 16;
+    const steps = Number.isFinite(this.colorBarSteps) ? Math.max(2, Math.min(64, Math.round(this.colorBarSteps))) : 16;
     for (let i = 0; i < steps; i++) {
-      const t = steps === 1 ? 0 : i / (steps - 1);
+      const t = i / (steps - 1);
       const l = Math.round(92 + (18 - 92) * t);
       const rgb = this.hslToRgb({ h: baseHsl.h, s: baseHsl.s, l });
-      const sw = document.createElement('div');
+      const sw = document.createElement('button');
+      sw.type = 'button';
       sw.className = 'colorbar__swatch';
       sw.style.backgroundColor = this.rgbaCss(rgb, alpha);
       el.appendChild(sw);
+    }
+  }
+
+  setColorBarSelection(key, index) {
+    const k = key === 'primary' || key === 'complement' || key === 'supportA' || key === 'supportB' ? key : 'primary';
+    const colors = this.colorBarColors && Array.isArray(this.colorBarColors[k]) ? this.colorBarColors[k] : [];
+    if (!colors.length) return;
+    const idx = Number.isFinite(index) ? Math.max(0, Math.min(colors.length - 1, Math.round(index))) : 0;
+    this.colorBarSelectedIndex[k] = idx;
+    this.applyColorBarActiveStates();
+    this.renderColorMixCanvas();
+  }
+
+  applyColorBarActiveStates() {
+    const mapping = [
+      { key: 'primary', el: this.colorBarPrimary },
+      { key: 'complement', el: this.colorBarComplement },
+      { key: 'supportA', el: this.colorBarSupportA },
+      { key: 'supportB', el: this.colorBarSupportB },
+    ];
+    for (const m of mapping) {
+      if (!(m.el instanceof HTMLElement)) continue;
+      const idx = this.colorBarSelectedIndex[m.key];
+      const children = Array.from(m.el.children);
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        if (!(child instanceof HTMLElement)) continue;
+        child.classList.toggle('is-active', i === idx);
+      }
+    }
+  }
+
+  ensureDefaultSelections() {
+    const keys = ['primary', 'complement', 'supportA', 'supportB'];
+    for (const k of keys) {
+      const colors = this.colorBarColors && Array.isArray(this.colorBarColors[k]) ? this.colorBarColors[k] : [];
+      if (!colors.length) continue;
+      const cur = this.colorBarSelectedIndex[k];
+      if (Number.isFinite(cur) && cur >= 0 && cur < colors.length) continue;
+      this.colorBarSelectedIndex[k] = Math.floor((colors.length - 1) / 2);
+    }
+  }
+
+  resizeColorMixCanvas() {
+    if (!(this.colorMixCanvas instanceof HTMLCanvasElement)) return;
+    const canvas = this.colorMixCanvas;
+    const rect = canvas.getBoundingClientRect();
+    const cssW = Math.max(1, rect.width);
+    const cssH = Math.max(1, rect.height);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(cssW * dpr));
+    canvas.height = Math.max(1, Math.round(cssH * dpr));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  renderColorMixCanvas() {
+    if (!(this.colorMixCanvas instanceof HTMLCanvasElement)) return;
+    this.resizeColorMixCanvas();
+    const canvas = this.colorMixCanvas;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    if (!w || !h) return;
+
+    const getColor = (k) => {
+      const colors = this.colorBarColors && Array.isArray(this.colorBarColors[k]) ? this.colorBarColors[k] : [];
+      const idx = this.colorBarSelectedIndex && Number.isFinite(this.colorBarSelectedIndex[k]) ? this.colorBarSelectedIndex[k] : -1;
+      return idx >= 0 && idx < colors.length ? colors[idx] : null;
+    };
+
+    const c1 = getColor('primary') || this.currentColor || '#000000';
+    const c2 = getColor('complement') || c1;
+    const c3 = getColor('supportA') || c2;
+    const c4 = getColor('supportB') || c2;
+
+    ctx.clearRect(0, 0, w, h);
+    let x = 0;
+    const widths = [0.8, 0.1, 0.05, 0.05].map((p) => Math.round(w * p));
+    // Ensure the last block fills any rounding gap.
+    widths[3] = Math.max(0, w - (widths[0] + widths[1] + widths[2]));
+    const colors = [c1, c2, c3, c4];
+    for (let i = 0; i < widths.length; i++) {
+      const ww = widths[i];
+      ctx.fillStyle = colors[i];
+      ctx.fillRect(x, 0, ww, h);
+      x += ww;
     }
   }
 
@@ -3725,10 +3820,42 @@
     const supportA = { h: (complement.h + 30) % 360, s: complement.s, l: complement.l };
     const supportB = { h: (complement.h + 360 - 30) % 360, s: complement.s, l: complement.l };
 
-    this.renderColorBar(this.colorBarPrimary, hsl, 0.8);
-    this.renderColorBar(this.colorBarComplement, complement, 1);
-    this.renderColorBar(this.colorBarSupportA, supportA, 1);
-    this.renderColorBar(this.colorBarSupportB, supportB, 1);
+    const alpha = 1;
+
+    // Render bars as clickable tint swatches.
+    this.colorBarColors.primary = [];
+    this.colorBarColors.complement = [];
+    this.colorBarColors.supportA = [];
+    this.colorBarColors.supportB = [];
+
+    const render = (el, key, base) => {
+      if (!(el instanceof HTMLElement)) return;
+      el.innerHTML = '';
+      const steps = Number.isFinite(this.colorBarSteps) ? Math.max(2, Math.min(64, Math.round(this.colorBarSteps))) : 16;
+      for (let i = 0; i < steps; i++) {
+        const t = i / (steps - 1);
+        const l = Math.round(92 + (18 - 92) * t);
+        const rgbStep = this.hslToRgb({ h: base.h, s: base.s, l });
+        const css = this.rgbaCss(rgbStep, alpha);
+        this.colorBarColors[key].push(css);
+        const sw = document.createElement('button');
+        sw.type = 'button';
+        sw.className = 'colorbar__swatch';
+        sw.style.backgroundColor = css;
+        sw.setAttribute('aria-label', `Tint ${i + 1}`);
+        sw.addEventListener('click', () => this.setColorBarSelection(key, i));
+        el.appendChild(sw);
+      }
+    };
+
+    render(this.colorBarPrimary, 'primary', hsl);
+    render(this.colorBarComplement, 'complement', complement);
+    render(this.colorBarSupportA, 'supportA', supportA);
+    render(this.colorBarSupportB, 'supportB', supportB);
+
+    this.ensureDefaultSelections();
+    this.applyColorBarActiveStates();
+    this.renderColorMixCanvas();
   }
 
   normalizeCssColor(color) {

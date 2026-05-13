@@ -238,8 +238,26 @@ body.right-collapsed #rightPanel {
 }
 
 .colorbar__swatch {
+  appearance: none;
+  border: 0;
+  padding: 0;
   flex: 1 1 0;
   min-width: 0;
+  cursor: pointer;
+}
+
+.colorbar__swatch.is-active {
+  outline: 2px solid rgba(0, 0, 0, 0.35);
+  outline-offset: -2px;
+}
+
+.color-mix {
+  width: 100%;
+  height: 70px;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.35);
 }
 
 .palette__swatch {

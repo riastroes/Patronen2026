@@ -1452,6 +1452,7 @@
       this.select = qs('patternSelect');
       this.preview = qs('patternPreview');
       this.rightViewStart = qs('rightViewStart');
+	  this.rightViewAbout = qs('rightViewAbout');
       this.rightViewComposition = qs('rightViewComposition');
       this.compositionGrid = qs('compositionGrid');
       this.rightViewPatterns = qs('rightViewPatterns');
@@ -1915,6 +1916,8 @@
     setRightView(view) {
       const next = view === 'start'
         ? 'start'
+        : view === 'about'
+          ? 'about'
         : view === 'composition'
           ? 'composition'
           : view === 'images'
@@ -1929,6 +1932,9 @@
       if (this.rightViewStart instanceof HTMLElement) {
         this.rightViewStart.hidden = next !== 'start';
       }
+	  if (this.rightViewAbout instanceof HTMLElement) {
+		this.rightViewAbout.hidden = next !== 'about';
+	  }
       if (this.rightViewComposition instanceof HTMLElement) {
         this.rightViewComposition.hidden = next !== 'composition';
       }

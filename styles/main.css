@@ -242,6 +242,7 @@ body.right-collapsed #rightPanel {
 
 .select {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -251,6 +252,7 @@ body.right-collapsed #rightPanel {
 
 .text-input {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -260,6 +262,7 @@ body.right-collapsed #rightPanel {
 
 .textarea {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;

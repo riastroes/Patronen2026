@@ -38,7 +38,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 						<a href="#" data-right-view="patterns">Patronen</a>
 						<a href="#" data-right-view="shapes">Vormen</a>
 						<a href="#" data-right-view="images">Afbeeldingen</a>
-						<a href="#">Over</a>
+						<a href="#" data-right-view="about">Over</a>
 					</nav>
 				</div>
 			</header>
@@ -82,11 +82,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							<label class="field" for="conceptInput">Concept</label>
 							<input id="conceptInput" class="text-input" type="text" autocomplete="off" />
 							<label class="field" for="descriptionInput">Omschrijving</label>
-							<textarea id="descriptionInput" class="textarea" rows="6"></textarea>
+							<textarea id="descriptionInput" class="textarea" rows="12"></textarea>
 							<div class="layers__actions" aria-label="PDF acties">
 								<button id="exportPdfBtn" class="layers__action" type="button">Exporteer PDF</button>
 								<button id="clearConceptBtn" class="layers__action" type="button">Wissen</button>
 							</div>
+						</div>
+						<div id="rightViewAbout" data-right-view="about" hidden>
+							<p>Dit programma is gemaakt door Ria Stroes met behulp van AI (GPT-5.2)</p>
 						</div>
 						<div id="rightViewComposition" data-right-view="composition" hidden>
 							<label class="field">Compositie</label>

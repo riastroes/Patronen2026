@@ -1970,7 +1970,7 @@
     }
 
     getCompositions() {
-      // 21 simple composition guides.
+      // 18 simple composition guides.
       const thirds = (ctx, w, h) => {
         ctx.beginPath();
         ctx.moveTo(w / 3, 0);
@@ -2112,29 +2112,8 @@
     }
     ctx.stroke();
     };
-    const armature = (ctx, w, h) => {
-    // Armature of the rectangle: diagonals + corner-to-midpoint lines.
-    ctx.beginPath();
-    // diagonals
-    ctx.moveTo(0, 0);
-    ctx.lineTo(w, h);
-    ctx.moveTo(w, 0);
-    ctx.lineTo(0, h);
-    // corner to opposite midpoint
-    ctx.moveTo(0, 0);
-    ctx.lineTo(w / 2, h);
-    ctx.moveTo(w, 0);
-    ctx.lineTo(w / 2, h);
-    ctx.moveTo(0, h);
-    ctx.lineTo(w / 2, 0);
-    ctx.moveTo(w, h);
-    ctx.lineTo(w / 2, 0);
-    // center cross
-    ctx.moveTo(w / 2, 0);
-    ctx.lineTo(w / 2, h);
-    ctx.moveTo(0, h / 2);
-    ctx.lineTo(w, h / 2);
-    ctx.stroke();
+    const emptyComposition = (_ctx, _w, _h) => {
+    // Intentionally empty (no guide).
     };
     const grid4 = (ctx, w, h) => {
     ctx.beginPath();
@@ -2156,53 +2135,6 @@
     }
     ctx.stroke();
     };
-    const oddsGuide = (ctx, w, h) => {
-    // Three vertical zones + small markers on 1/3 and 2/3 heights.
-    const x1 = w / 3;
-    const x2 = (2 * w) / 3;
-    const y1 = h / 3;
-    const y2 = (2 * h) / 3;
-    const tick = Math.min(w, h) * 0.06;
-    ctx.beginPath();
-    ctx.moveTo(x1, 0);
-    ctx.lineTo(x1, h);
-    ctx.moveTo(x2, 0);
-    ctx.lineTo(x2, h);
-    for (const x of [x1, x2]) {
-      ctx.moveTo(x - tick, y1);
-      ctx.lineTo(x + tick, y1);
-      ctx.moveTo(x - tick, y2);
-      ctx.lineTo(x + tick, y2);
-    }
-    ctx.stroke();
-    };
-    const topBottomHeavy = (ctx, w, h) => {
-    const yTop = h * 0.25;
-    const yBottom = h * 0.75;
-    const r = Math.min(w, h) * 0.12;
-    ctx.beginPath();
-    ctx.moveTo(0, yTop);
-    ctx.lineTo(w, yTop);
-    ctx.moveTo(0, yBottom);
-    ctx.lineTo(w, yBottom);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(w / 2, yTop, r, 0, Math.PI * 2);
-    ctx.arc(w / 2, yBottom, r, 0, Math.PI * 2);
-    ctx.stroke();
-    };
-    const ellipseRings = (ctx, w, h) => {
-    const cx = w / 2;
-    const cy = h / 2;
-    const rx = w * 0.38;
-    const ry = h * 0.28;
-    ctx.beginPath();
-    for (const k of [1, 0.72, 0.46]) {
-      ctx.ellipse(cx, cy, rx * k, ry * k, 0, 0, Math.PI * 2);
-    }
-    ctx.stroke();
-    };
 
       return [
         { id: 'c1', label: '1', draw: thirds },
@@ -2220,12 +2152,9 @@
     { id: 'c13', label: '13', draw: doubleFrame },
     { id: 'c14', label: '14', draw: offsetFrame },
     { id: 'c15', label: '15', draw: goldenSpiral },
-    { id: 'c16', label: '16', draw: armature },
+    { id: 'c16', label: '16', draw: emptyComposition },
     { id: 'c17', label: '17', draw: grid4 },
     { id: 'c18', label: '18', draw: grid5 },
-    { id: 'c19', label: '19', draw: oddsGuide },
-    { id: 'c20', label: '20', draw: topBottomHeavy },
-    { id: 'c21', label: '21', draw: ellipseRings },
       ];
     }
 

@@ -2914,6 +2914,25 @@
     return -1;
   };
 
+  const getClipPolyPxForLayerIndex = (layerIndex) => {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const layer = layers[layerIndex];
+    const clipN = layer && Array.isArray(layer.clipPathN) ? layer.clipPathN : null;
+    if (!clipN || clipN.length < 3) return null;
+    const { w, h } = getOverlaySize();
+    return clipN.map((q) => [q[0] * w, q[1] * h]);
+  };
+
+  const hitTestTopmostClipLayer = (px, py) => {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const polyPx = getClipPolyPxForLayerIndex(i);
+      if (!polyPx) continue;
+      if (pointInPolygon(px, py, polyPx)) return i;
+    }
+    return -1;
+  };
+
   const getImageHandleAtPoint = (rect, px, py) => {
     if (!rect) return '';
     const hx = rect.x + rect.w;
@@ -3074,6 +3093,42 @@
       return;
     }
     }
+
+      // Click-to-select clip (shape) layers on the canvas.
+      // Shift+click toggles multi-selection; plain click selects single and allows dragging.
+      if (this.toolMode !== 'crop') {
+        const clipIdx = hitTestTopmostClipLayer(p[0], p[1]);
+        if (clipIdx >= 0) {
+          if (evt.shiftKey) {
+            this.toggleLayerSelection(clipIdx);
+            this.renderLayersList();
+            drawOverlayPath();
+            evt.preventDefault();
+            return;
+          }
+
+          this.setLayerSelectionSingle(clipIdx);
+          this.renderLayersList();
+          drawOverlayPath();
+
+          // Start dragging the selected shape.
+          const polyPx = getClipPolyPxForLayerIndex(clipIdx);
+          if (polyPx && pointInPolygon(p[0], p[1], polyPx)) {
+            this.isDraggingShape = true;
+            this.dragPointerId = evt.pointerId;
+            this.dragLayerIndex = clipIdx;
+            this.dragStartPos = p;
+            this.dragStartClipPathN = Array.isArray(this.activeClipPathN)
+              ? this.activeClipPathN.map((q) => [q[0], q[1]])
+              : null;
+            this.dragPendingPos = p;
+            overlay.setPointerCapture(evt.pointerId);
+            overlay.style.cursor = 'grabbing';
+            evt.preventDefault();
+            return;
+          }
+        }
+      }
 
       if (this.toolMode === 'crop') {
         this.isCropping = true;

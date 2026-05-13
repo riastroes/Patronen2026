@@ -1395,6 +1395,10 @@
 	  this.thicknessValue = qs('patternThicknessValue');
       this.tileScaleToShape = qs('tileScaleToShape');
 
+    this.modeDrawBtn = qs('modeDrawBtn');
+    this.modeSelectBtn = qs('modeSelectBtn');
+    this.interactionMode = 'draw'; // 'draw' | 'select'
+
     this.rightView = 'patterns';
     this.savedImagesDB = new SavedImagesDB();
   this.savedShapesDB = new SavedShapesDB();
@@ -1500,10 +1504,41 @@
       this.initRepeatControl();
 	  this.initPaletteControl();
 	  this.initColorMixCanvasControl();
-    this.initThicknessControl();
+	  this.initThicknessControl();
       this.initTileScaleToggle();
       this.initImageActions();
       this.initShapeActions();
+
+      // Left-panel mode toggle: Tekenen (default) vs Selecteren.
+      if (this.modeDrawBtn instanceof HTMLButtonElement && this.modeSelectBtn instanceof HTMLButtonElement) {
+        this.modeDrawBtn.addEventListener('click', () => {
+          this.setInteractionMode('draw');
+        });
+        this.modeSelectBtn.addEventListener('click', () => {
+          this.setInteractionMode('select');
+        });
+
+        // Ensure UI reflects the default mode.
+        this.setInteractionMode(this.interactionMode);
+      }
+
+      // Clicking the empty area of the layers list deselects all layers.
+      // (This enables the "no layer chosen" state so actions can target the background.)
+      if (this.layersRoot instanceof HTMLElement && this.layersRoot.dataset.boundDeselect !== '1') {
+        this.layersRoot.dataset.boundDeselect = '1';
+        this.layersRoot.addEventListener('click', (evt) => {
+          const target = evt.target instanceof HTMLElement ? evt.target : null;
+          if (!target) return;
+          if (target.closest('.layers__item')) return;
+          if (target.closest('button') || target.closest('input') || target.closest('select')) return;
+
+          this.selectedLayerIndices = new Set();
+          this.setActiveLayerIndex(-1);
+          this.syncActiveShapeToLayerIndex(-1);
+          this.renderLayersList();
+          if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+        });
+      }
 
       const initial = this.patterns && this.patterns[0] ? this.patterns[0].file : null;
       this.select.value = initial || '';
@@ -1586,9 +1621,21 @@
           return;
         }
 
-		this.canvasLayers.addLayer(this.currentFile, this.getRepeatCount(), this.currentColor, this.getThickness());
-    this.setLayerSelectionSingle(this.canvasLayers.layers.length - 1);
-		this.renderLayersList();
+        if (this.activeLayerIndex >= 0 && this.activeLayerIndex < layers.length) {
+          this.canvasLayers.addPatternPaintToLayerIndex(
+            this.activeLayerIndex,
+            this.currentFile,
+            this.getRepeatCount(),
+            this.currentColor,
+            this.getThickness(),
+            this.currentTileScaleMode
+          );
+          this.renderLayersList();
+          return;
+        }
+
+			this.applyPatternToBackground();
+			this.renderLayersList();
       });
 
       this.initDrawShapeToMask();
@@ -1605,6 +1652,20 @@
       });
     }
 
+    setInteractionMode(nextMode) {
+      const mode = nextMode === 'select' ? 'select' : 'draw';
+      this.interactionMode = mode;
+
+      if (!(this.modeDrawBtn instanceof HTMLButtonElement)) return;
+      if (!(this.modeSelectBtn instanceof HTMLButtonElement)) return;
+
+      const isDraw = mode !== 'select';
+      this.modeDrawBtn.classList.toggle('is-active', isDraw);
+      this.modeSelectBtn.classList.toggle('is-active', !isDraw);
+      this.modeDrawBtn.setAttribute('aria-pressed', isDraw ? 'true' : 'false');
+      this.modeSelectBtn.setAttribute('aria-pressed', !isDraw ? 'true' : 'false');
+    }
+
     resetToStart() {
       // Clear canvas + layers.
       if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
@@ -1612,6 +1673,7 @@
       }
 
       // Reset interaction state.
+      this.setInteractionMode('draw');
       this.isDrawing = false;
       this.drawPointerId = null;
       this.drawPath = [];
@@ -1943,6 +2005,8 @@
       if (this.cropToolBtn && this.cropToolBtn.dataset.bound !== '1') {
         this.cropToolBtn.dataset.bound = '1';
         this.cropToolBtn.addEventListener('click', () => {
+          // Crop implies interaction/selection mode.
+          this.setInteractionMode('select');
           this.toolMode = 'crop';
 
           // Crop selection should override any active shape/image selection.
@@ -2320,13 +2384,13 @@
       if (next.has(idx)) next.delete(idx);
       else next.add(idx);
 
-      this.selectedLayerIndices = next;
-
+      // Never allow ending up with no selected layers via toggling.
+      // (Prevents deselect by clicking the checkbox off.)
       if (next.size === 0) {
-        this.setActiveLayerIndex(-1);
-        this.syncActiveShapeToLayerIndex(-1);
-        return;
+        next.add(idx);
       }
+
+      this.selectedLayerIndices = next;
 
       // Make the toggled layer the primary active layer.
       this.setActiveLayerIndex(idx);
@@ -2493,7 +2557,7 @@
     applySolidToSelectedLayerOrCanvas() {
       const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
 
-      const selected = Array.from(this.selectedLayerIndices || []).filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length);
+      const selected = this.getSelectedLayerIndices();
       if (selected.length > 0) {
         const c = typeof this.currentColor === 'string' && this.currentColor.trim() ? this.currentColor.trim() : '#000000';
         const clippedTouched = [];
@@ -2565,10 +2629,93 @@
         return;
       }
 
-      const idx = this.canvasLayers.addSolidLayer(this.currentColor);
-      this.setActiveLayerIndex(idx);
+      // No selection: apply to background.
+      this.applySolidToBackground();
       this.renderLayersList();
     }
+
+  getBackgroundLayerIndex() {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    if (layers.length === 0) return -1;
+
+    const layer = layers[0];
+    const hasClip = layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+    return hasClip ? -1 : 0;
+  }
+
+  ensureBackgroundLayerExistsAsSolid(color) {
+    const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+    if (!this.canvasLayers || !Array.isArray(this.canvasLayers.layers)) return;
+
+    this.canvasLayers.layers.unshift({
+      clipPathN: null,
+      clipKey: null,
+      paints: [{ kind: 'solid', file: null, color: c }],
+      visibleColors: [c],
+    });
+
+    if (typeof this.canvasLayers.cancelAllVisibleColorsSchedules === 'function') {
+      this.canvasLayers.cancelAllVisibleColorsSchedules();
+    }
+    this.canvasLayers.redrawAllLayers();
+  }
+
+  ensureBackgroundLayerExistsAsPattern(file, repeatCount, color, thickness) {
+    const f = typeof file === 'string' ? file.trim() : '';
+    if (!f) return;
+    const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+    if (!this.canvasLayers || !Array.isArray(this.canvasLayers.layers)) return;
+
+    this.canvasLayers.layers.unshift({
+      clipPathN: null,
+      clipKey: null,
+      paints: [{ file: f, repeatCount, color: c, thickness, tileScaleMode: 'canvas' }],
+    });
+
+    if (typeof this.canvasLayers.cancelAllVisibleColorsSchedules === 'function') {
+      this.canvasLayers.cancelAllVisibleColorsSchedules();
+    }
+    this.canvasLayers.redrawAllLayers();
+  }
+
+  applySolidToBackground() {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const bgIdx = this.getBackgroundLayerIndex();
+    if (bgIdx >= 0) {
+      this.canvasLayers.addSolidPaintToLayerIndex(bgIdx, this.currentColor);
+      return;
+    }
+    this.ensureBackgroundLayerExistsAsSolid(this.currentColor);
+  }
+
+  applyPatternToBackground() {
+    const f = typeof this.currentFile === 'string' ? this.currentFile.trim() : '';
+    if (!f) {
+      this.applySolidToBackground();
+      return;
+    }
+
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const bgIdx = this.getBackgroundLayerIndex();
+    if (bgIdx >= 0) {
+      this.canvasLayers.addPatternPaintToLayerIndex(
+        bgIdx,
+        f,
+        this.getRepeatCount(),
+        this.currentColor,
+        this.getThickness(),
+        'canvas'
+      );
+      return;
+    }
+
+    this.ensureBackgroundLayerExistsAsPattern(
+      f,
+      this.getRepeatCount(),
+      this.currentColor,
+      this.getThickness()
+    );
+  }
 
     renderLayersList() {
       if (!(this.layersRoot instanceof HTMLElement)) return;
@@ -2583,7 +2730,7 @@
         const i = layers.length - 1 - viewIndex; // model index
         const layer = layers[i] || {};
 
-        const item = document.createElement('label');
+        const item = document.createElement('div');
         const isPrimary = i === this.activeLayerIndex;
         const isSelected = selectedSet.has(i) || isPrimary;
         item.className = 'layers__item' + (isSelected ? ' is-selected' : '') + (isPrimary ? ' is-primary' : '');
@@ -2601,6 +2748,7 @@
         radio.addEventListener('click', (evt) => {
           evt.preventDefault();
           evt.stopPropagation();
+          this.setInteractionMode('select');
           if (evt.shiftKey) this.toggleLayerSelection(i);
           else this.setLayerSelectionSingle(i);
           this.renderLayersList();
@@ -2617,6 +2765,7 @@
         item.addEventListener('click', (evt) => {
           const target = evt.target instanceof HTMLElement ? evt.target : null;
           if (target && (target.closest('button') || target.closest('input') || target.closest('select'))) return;
+          this.setInteractionMode('select');
           if (evt.shiftKey) this.toggleLayerSelection(i);
           else this.setLayerSelectionSingle(i);
           this.renderLayersList();
@@ -2673,8 +2822,8 @@
               if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
 
               const layers2 = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-              const sel = Array.from(this.selectedLayerIndices || []).filter((x) => Number.isFinite(x) && x >= 0 && x < layers2.length);
-              const applyGroup = sel.length > 1 && (this.selectedLayerIndices instanceof Set) && this.selectedLayerIndices.has(i);
+			  const sel = this.getSelectedLayerIndices();
+			  const applyGroup = sel.length > 1 && sel.includes(i);
               if (applyGroup) {
                 for (const li of sel) this.removeColorFromLayerIndex(li, c);
                 return;
@@ -2702,8 +2851,8 @@
           if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
 
           const layers2 = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-          const sel = Array.from(this.selectedLayerIndices || []).filter((x) => Number.isFinite(x) && x >= 0 && x < layers2.length);
-          const applyGroup = sel.length > 1 && (this.selectedLayerIndices instanceof Set) && this.selectedLayerIndices.has(i);
+		  const sel = this.getSelectedLayerIndices();
+		  const applyGroup = sel.length > 1 && sel.includes(i);
           if (applyGroup) {
             // Remove from highest index to lowest to avoid index shifts.
             sel.sort((a, b) => b - a);
@@ -2864,43 +3013,121 @@
         .catch(() => {});
     });
 
-    // Wheel scaling for selected image layers.
+    // Wheel scaling for selected image layers and selected shapes.
     overlay.addEventListener('wheel', (evt) => {
       const idx = this.activeLayerIndex;
-      if (!(Number.isFinite(idx) && idx >= 0)) return;
-      const paint = getImagePaintForLayerIndex(idx);
-      if (!paint) return;
+
+      // 1) Image scaling (existing behavior)
+      if (Number.isFinite(idx) && idx >= 0) {
+        const paint = getImagePaintForLayerIndex(idx);
+        if (paint) {
+          evt.preventDefault();
+
+          const xN = Number.isFinite(paint.xN) ? paint.xN : 0;
+          const yN = Number.isFinite(paint.yN) ? paint.yN : 0;
+          const wN = Number.isFinite(paint.wN) ? paint.wN : 0.25;
+          const hN = Number.isFinite(paint.hN) ? paint.hN : 0.25;
+          const minN = 0.03;
+
+          const cx = xN + wN / 2;
+          const cy = yN + hN / 2;
+          const aspect = hN > 0.0001 ? wN / hN : 1;
+
+          const dir = evt.deltaY > 0 ? -1 : 1;
+          const factor = dir > 0 ? 1.08 : 1 / 1.08;
+          let nextW = wN * factor;
+          nextW = Math.max(minN, Math.min(1, nextW));
+          let nextH = aspect > 0.0001 ? nextW / aspect : nextW;
+          nextH = Math.max(minN, Math.min(1, nextH));
+
+          let nextX = cx - nextW / 2;
+          let nextY = cy - nextH / 2;
+          nextX = Math.max(0, Math.min(1 - nextW, nextX));
+          nextY = Math.max(0, Math.min(1 - nextH, nextY));
+
+          paint.xN = clamp01(nextX);
+          paint.yN = clamp01(nextY);
+          paint.wN = clamp01(nextW);
+          paint.hN = clamp01(nextH);
+
+          this.canvasLayers.redrawAllLayers();
+          drawOverlayPath();
+          return;
+        }
+      }
+
+      // 2) Shape scaling (active clip path)
+      if (!Array.isArray(this.activeClipPathN) || this.activeClipPathN.length < 3) return;
 
       evt.preventDefault();
 
-      const xN = Number.isFinite(paint.xN) ? paint.xN : 0;
-      const yN = Number.isFinite(paint.yN) ? paint.yN : 0;
-      const wN = Number.isFinite(paint.wN) ? paint.wN : 0.25;
-      const hN = Number.isFinite(paint.hN) ? paint.hN : 0.25;
-      const minN = 0.03;
+      const base = this.activeClipPathN
+        .map((p) => (Array.isArray(p) && p.length >= 2 ? [Number(p[0]), Number(p[1])] : null))
+        .filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+      if (base.length < 3) return;
 
-      const cx = xN + wN / 2;
-      const cy = yN + hN / 2;
-      const aspect = hN > 0.0001 ? wN / hN : 1;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const p of base) {
+        if (p[0] < minX) minX = p[0];
+        if (p[0] > maxX) maxX = p[0];
+        if (p[1] < minY) minY = p[1];
+        if (p[1] > maxY) maxY = p[1];
+      }
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const curW = Math.max(0.000001, maxX - minX);
+      const curH = Math.max(0.000001, maxY - minY);
 
       const dir = evt.deltaY > 0 ? -1 : 1;
-      const factor = dir > 0 ? 1.08 : 1 / 1.08;
-      let nextW = wN * factor;
-      nextW = Math.max(minN, Math.min(1, nextW));
-      let nextH = aspect > 0.0001 ? nextW / aspect : nextW;
-      nextH = Math.max(minN, Math.min(1, nextH));
+      let factor = dir > 0 ? 1.08 : 1 / 1.08;
 
-      let nextX = cx - nextW / 2;
-      let nextY = cy - nextH / 2;
-      nextX = Math.max(0, Math.min(1 - nextW, nextX));
-      nextY = Math.max(0, Math.min(1 - nextH, nextY));
+      // Clamp minimum size.
+      const minDim = 0.03;
+      const minFactor = Math.max(minDim / curW, minDim / curH);
+      factor = Math.max(factor, Math.min(1, minFactor));
 
-      paint.xN = clamp01(nextX);
-      paint.yN = clamp01(nextY);
-      paint.wN = clamp01(nextW);
-      paint.hN = clamp01(nextH);
+      // Clamp maximum scale so the shape stays inside 0..1.
+      if (factor > 1) {
+        let maxFactor = Infinity;
+        for (const p of base) {
+          const dx = p[0] - cx;
+          const dy = p[1] - cy;
+          if (dx > 0) maxFactor = Math.min(maxFactor, (1 - cx) / dx);
+          else if (dx < 0) maxFactor = Math.min(maxFactor, (0 - cx) / dx);
+          if (dy > 0) maxFactor = Math.min(maxFactor, (1 - cy) / dy);
+          else if (dy < 0) maxFactor = Math.min(maxFactor, (0 - cy) / dy);
+        }
+        if (Number.isFinite(maxFactor) && maxFactor > 0) factor = Math.min(factor, maxFactor);
+      }
 
-      this.canvasLayers.redrawAllLayers();
+      if (!(Number.isFinite(factor) && factor > 0)) return;
+
+      const next = base
+        .map((p) => [clamp01(cx + (p[0] - cx) * factor), clamp01(cy + (p[1] - cy) * factor)])
+        .filter((p) => Array.isArray(p) && p.length === 2);
+      if (next.length < 3) return;
+
+      this.activeClipPathN = next;
+      this.activeClipKey = this.makeClipKey(next);
+
+      // If the active clip is tied to an actual layer, keep it in sync and redraw.
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      if (Number.isFinite(idx) && idx >= 0 && idx < layers.length) {
+        const layer = layers[idx];
+        if (layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3) {
+          layer.clipPathN = next.slice();
+          layer.clipKey = this.activeClipKey;
+          this.canvasLayers.redrawAllLayers();
+          if (typeof this.canvasLayers.scheduleVisibleColorsCompute === 'function') {
+            this.canvasLayers.scheduleVisibleColorsCompute(idx).catch(() => {});
+          }
+          this.renderLayersList();
+        }
+      }
+
       drawOverlayPath();
     }, { passive: false });
 
@@ -3116,8 +3343,10 @@
 
       const p = getPos(evt);
 
+      const interactionMode = this.interactionMode === 'select' ? 'select' : 'draw';
+
     // Click-to-select image layer (topmost hit), and start move/resize.
-    if (this.toolMode !== 'crop') {
+    if (interactionMode === 'select' && this.toolMode !== 'crop') {
     const hitIdx = hitTestTopmostImageLayer(p[0], p[1]);
     if (hitIdx >= 0) {
       this.setLayerSelectionSingle(hitIdx);
@@ -3143,8 +3372,8 @@
     }
 
       // Click-to-select clip (shape) layers on the canvas.
-      // Shift+click toggles multi-selection; plain click selects single and allows dragging.
-      if (this.toolMode !== 'crop') {
+      // Shift+click toggles multi-selection.
+      if (interactionMode === 'select' && this.toolMode !== 'crop') {
         const clipIdx = hitTestTopmostClipLayer(p[0], p[1]);
         if (clipIdx >= 0) {
           if (evt.shiftKey) {
@@ -3194,7 +3423,7 @@
       // If a clipped layer is selected and the user clicks inside its shape,
       // we drag the shape instead of starting a new drawing.
       const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
-      const canDragSelection = hasActiveClip;
+      const canDragSelection = interactionMode === 'select' && hasActiveClip;
       if (canDragSelection) {
         const { w, h } = getOverlaySize();
         const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
@@ -3210,6 +3439,17 @@
           evt.preventDefault();
           return;
         }
+      }
+
+      // Background click always clears selection.
+      this.setLayerSelectionSingle(-1);
+      this.renderLayersList();
+      drawOverlayPath();
+
+      // In Selecteren mode, background click should not start drawing.
+      if (interactionMode === 'select') {
+        evt.preventDefault();
+        return;
       }
 
       this.isDrawing = true;
@@ -3561,14 +3801,14 @@
     this.palette.dataset.bound = '1';
 
     const colors = [
-      '#e74c3c',
-      '#e67e22',
-      '#f1c40f',
-      '#2ecc71',
-      '#1abc9c',
-      '#3498db',
-      '#9b59b6',
-      '#e056fd',
+      '#ff0000',
+      '#ff7f00',
+      '#ffff00',
+      '#00ff00',
+      '#00ffff',
+      '#0000ff',
+      '#7f00ff',
+      '#ff00ff',
       '#7f8c8d',
       '#8e5a2a',
       '#000000',
@@ -3631,8 +3871,17 @@
       canvas.addEventListener('click', (evt) => {
         const rect = canvas.getBoundingClientRect();
         const x = evt.clientX - rect.left;
+        const y = evt.clientY - rect.top;
         const w = rect.width;
         if (!w) return;
+
+        // Top strip (30px): quick-pick white/black.
+        if (y >= 0 && y < 30) {
+          const picked = x < w / 2 ? '#ffffff' : '#000000';
+          this.setCurrentColor(picked);
+          return;
+        }
+
         const t = Math.max(0, Math.min(0.999999, x / w));
         let key = 'primary';
         if (t >= 0.8 && t < 0.9) key = 'complement';
@@ -3832,6 +4081,8 @@
     );
     if (!canvases.length) return;
 
+    const topStripH = 30;
+
     const getColor = (k) => {
       const colors = this.colorBarColors && Array.isArray(this.colorBarColors[k]) ? this.colorBarColors[k] : [];
       const idx = this.colorBarSelectedIndex && Number.isFinite(this.colorBarSelectedIndex[k]) ? this.colorBarSelectedIndex[k] : -1;
@@ -3854,6 +4105,21 @@
       if (!ctx) continue;
 
       ctx.clearRect(0, 0, w, h);
+
+      // Top strip: white + black blocks.
+      const stripH = Math.max(0, Math.min(topStripH, h));
+      if (stripH > 0) {
+        const halfW = w / 2;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, halfW, stripH);
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(halfW, 0, w - halfW, stripH);
+      }
+
+      const mixY = stripH;
+      const mixH = Math.max(0, h - stripH);
+      if (mixH <= 0) continue;
+
       let x = 0;
       const widths = [0.8, 0.1, 0.05, 0.05].map((p) => Math.round(w * p));
       widths[3] = Math.max(0, w - (widths[0] + widths[1] + widths[2]));
@@ -3861,7 +4127,7 @@
       for (let i = 0; i < widths.length; i++) {
         const ww = widths[i];
         ctx.fillStyle = colors[i];
-        ctx.fillRect(x, 0, ww, h);
+        ctx.fillRect(x, mixY, ww, mixH);
         x += ww;
       }
     }

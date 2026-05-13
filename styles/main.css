@@ -253,7 +253,7 @@ body.right-collapsed #rightPanel {
 
 .color-mix {
   width: 100%;
-  height: 70px;
+  height: 100px;
   display: block;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -354,6 +354,31 @@ body.right-collapsed #rightPanel {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.mode-toggle__btn {
+  flex: 1 1 0;
+  border: 1px solid var(--border);
+  background: white;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.mode-toggle__btn:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.mode-toggle__btn.is-active {
+  outline: 2px solid rgba(0, 0, 0, 0.22);
+  outline-offset: 2px;
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .layers__actions {

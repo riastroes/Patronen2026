@@ -1431,6 +1431,7 @@
 
       this.currentFile = '';
     this.currentColor = '#000000';
+    this.baseColor = '#000000';
     this.currentThickness = 1;
       this.currentTileScaleMode = 'canvas';
       this.canvasLayers = new PatternCanvasLayers(this.canvas);
@@ -1647,7 +1648,7 @@
       this.selectedLayerIndices = new Set();
 
       // Reset controls to defaults.
-      this.setCurrentColor('#000000');
+      this.setBaseColor('#000000');
 
       if (this.repeat instanceof HTMLInputElement) {
         this.repeat.value = '10';
@@ -3582,16 +3583,19 @@
       btn.style.backgroundColor = c;
       btn.setAttribute('aria-label', `Kleur ${c}`);
       btn.addEventListener('click', () => {
-        this.setCurrentColor(c);
+        this.setBaseColor(c);
       });
       this.palette.appendChild(btn);
     }
 
-    this.setCurrentColor(this.currentColor);
+    this.setBaseColor(this.baseColor);
   }
 
-  setCurrentColor(color) {
-    this.currentColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+  setBaseColor(color) {
+    this.baseColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+
+    // Picking a base color also resets the working color.
+    this.currentColor = this.baseColor;
 
     if (this.palette instanceof HTMLElement) {
       for (const el of Array.from(this.palette.children)) {
@@ -3599,13 +3603,20 @@
         const bg = el.style.backgroundColor;
         el.classList.toggle(
           'is-active',
-          bg === this.currentColor || this.normalizeCssColor(bg) === this.normalizeCssColor(this.currentColor)
+          bg === this.baseColor || this.normalizeCssColor(bg) === this.normalizeCssColor(this.baseColor)
         );
       }
     }
 
     if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
     this.updateColorBars();
+  }
+
+  setCurrentColor(color) {
+    this.currentColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+
+    // Working color should update preview, but should not move the palette or rebuild bars.
+    if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
   }
 
   initColorMixCanvasControl() {
@@ -3860,7 +3871,7 @@
     const els = [this.colorBarPrimary, this.colorBarComplement, this.colorBarSupportA, this.colorBarSupportB];
     if (!els.some((el) => el instanceof HTMLElement)) return;
 
-    const normalized = this.normalizeCssColor(this.currentColor);
+    const normalized = this.normalizeCssColor(this.baseColor);
     const rgb = this.parseCssRgb(normalized);
     if (!rgb) return;
 

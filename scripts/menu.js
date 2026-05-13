@@ -3726,9 +3726,9 @@
     const supportB = { h: (complement.h + 360 - 30) % 360, s: complement.s, l: complement.l };
 
     this.renderColorBar(this.colorBarPrimary, hsl, 0.8);
-    this.renderColorBar(this.colorBarComplement, complement, 0.1);
-    this.renderColorBar(this.colorBarSupportA, supportA, 0.05);
-    this.renderColorBar(this.colorBarSupportB, supportB, 0.05);
+    this.renderColorBar(this.colorBarComplement, complement, 1);
+    this.renderColorBar(this.colorBarSupportA, supportA, 1);
+    this.renderColorBar(this.colorBarSupportB, supportB, 1);
   }
 
   normalizeCssColor(color) {

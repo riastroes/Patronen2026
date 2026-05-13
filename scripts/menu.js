@@ -1382,6 +1382,7 @@
       this.layersRoot = qs('layersRoot');
 	  this.cropToolBtn = qs('cropToolBtn');
 	  this.saveImageBtn = qs('saveImageBtn');
+	  this.exportPdfBtn = qs('exportPdfBtn');
       this.repeat = qs('patternRepeat');
       this.repeatValue = qs('patternRepeatValue');
       this.palette = qs('palette');
@@ -1512,6 +1513,15 @@
       this.initTileScaleToggle();
       this.initImageActions();
       this.initShapeActions();
+
+      if (this.exportPdfBtn && this.exportPdfBtn.dataset.bound !== '1') {
+        this.exportPdfBtn.dataset.bound = '1';
+        this.exportPdfBtn.addEventListener('click', () => {
+          const concept = this.getConceptValue();
+          const description = this.getDescriptionValue();
+          this.exportSavedImagesPdf({ concept, description, createdAt: Date.now() }).catch(() => false);
+        });
+      }
 
       // Left-panel mode toggle: Tekenen (default) vs Selecteren.
       if (this.modeDrawBtn instanceof HTMLButtonElement && this.modeSelectBtn instanceof HTMLButtonElement) {

@@ -1452,6 +1452,8 @@
       this.select = qs('patternSelect');
       this.preview = qs('patternPreview');
       this.rightViewStart = qs('rightViewStart');
+      this.rightViewComposition = qs('rightViewComposition');
+      this.compositionGrid = qs('compositionGrid');
       this.rightViewPatterns = qs('rightViewPatterns');
       this.rightViewColors = qs('rightViewColors');
       this.rightViewImages = qs('rightViewImages');
@@ -1460,6 +1462,7 @@
       this.savedShapesRoot = qs('savedShapes');
       this.saveShapeBtn = qs('saveShapeBtn');
       this.canvas = qs('mainCanvas');
+      this.compositionOverlay = qs('compositionOverlay');
       this.layersRoot = qs('layersRoot');
 	  this.cropToolBtn = qs('cropToolBtn');
 	  this.saveImageBtn = qs('saveImageBtn');
@@ -1496,6 +1499,7 @@
 	  this.layerThumbObjectUrls = [];
     this.selectedSavedImageId = '';
     this.savedImagesCache = [];
+      this.selectedCompositionId = '';
 
       this.patterns = [
         { label: 'Geen', file: '' },
@@ -1595,6 +1599,8 @@
 
       // Migrate legacy IndexedDB/localStorage from previous app name.
       this.migrateLegacyAppData().catch(() => {});
+
+	  this.initCompositionView();
 
       this.initRepeatControl();
 	  this.initPaletteControl();
@@ -1795,6 +1801,8 @@
 
       window.addEventListener('resize', () => {
         this.resizeDrawOverlay();
+		this.resizeCompositionOverlay();
+		this.renderCompositionOverlay();
         if (!this.canvasLayers.hasLayers()) return;
         this.canvasLayers.redrawAllLayers();
       });
@@ -1819,6 +1827,12 @@
       if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
         this.canvasLayers.clearAllLayers();
       }
+
+	  // Clear composition overlay/selection.
+	  this.selectedCompositionId = '';
+    this.clearCompositionStorage();
+	  this.updateCompositionThumbSelection();
+	  this.renderCompositionOverlay();
 
       // Reset interaction state.
       this.setInteractionMode('draw');
@@ -1901,17 +1915,22 @@
     setRightView(view) {
       const next = view === 'start'
         ? 'start'
-        : view === 'images'
-          ? 'images'
-          : view === 'shapes'
-            ? 'shapes'
-            : view === 'colors'
-              ? 'colors'
-              : 'patterns';
+        : view === 'composition'
+          ? 'composition'
+          : view === 'images'
+            ? 'images'
+            : view === 'shapes'
+              ? 'shapes'
+              : view === 'colors'
+                ? 'colors'
+                : 'patterns';
       this.rightView = next;
 
       if (this.rightViewStart instanceof HTMLElement) {
         this.rightViewStart.hidden = next !== 'start';
+      }
+      if (this.rightViewComposition instanceof HTMLElement) {
+        this.rightViewComposition.hidden = next !== 'composition';
       }
       if (this.rightViewPatterns instanceof HTMLElement) {
         this.rightViewPatterns.hidden = next !== 'patterns';
@@ -1933,6 +1952,389 @@
       if (next === 'images') this.renderSavedImages();
       if (next === 'shapes') this.renderSavedShapes();
 	  this.renderColorMixCanvas();
+      if (next === 'composition') {
+        this.renderCompositionThumbs();
+        this.resizeCompositionOverlay();
+        this.renderCompositionOverlay();
+      }
+    }
+
+    getCompositionStrokeStyle() {
+      try {
+        const cs = getComputedStyle(document.documentElement);
+        const border = (cs.getPropertyValue('--border') || '').trim();
+        return border || 'rgba(0,0,0,0.12)';
+      } catch (_) {
+        return 'rgba(0,0,0,0.12)';
+      }
+    }
+
+    getCompositions() {
+      // 21 simple composition guides.
+      const thirds = (ctx, w, h) => {
+        ctx.beginPath();
+        ctx.moveTo(w / 3, 0);
+        ctx.lineTo(w / 3, h);
+        ctx.moveTo((2 * w) / 3, 0);
+        ctx.lineTo((2 * w) / 3, h);
+        ctx.moveTo(0, h / 3);
+        ctx.lineTo(w, h / 3);
+        ctx.moveTo(0, (2 * h) / 3);
+        ctx.lineTo(w, (2 * h) / 3);
+        ctx.stroke();
+      };
+      const centerCross = (ctx, w, h) => {
+        ctx.beginPath();
+        ctx.moveTo(w / 2, 0);
+        ctx.lineTo(w / 2, h);
+        ctx.moveTo(0, h / 2);
+        ctx.lineTo(w, h / 2);
+        ctx.stroke();
+      };
+      const diagTLBR = (ctx, w, h) => {
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(w, h);
+        ctx.stroke();
+      };
+      const diagTRBL = (ctx, w, h) => {
+        ctx.beginPath();
+        ctx.moveTo(w, 0);
+        ctx.lineTo(0, h);
+        ctx.stroke();
+      };
+      const frameInset = (ctx, w, h) => {
+        const m = Math.min(w, h) * 0.12;
+        ctx.beginPath();
+        ctx.rect(m, m, w - 2 * m, h - 2 * m);
+        ctx.stroke();
+      };
+      const circleCenter = (ctx, w, h) => {
+        const r = Math.min(w, h) * 0.32;
+        ctx.beginPath();
+        ctx.arc(w / 2, h / 2, r, 0, Math.PI * 2);
+        ctx.stroke();
+      };
+      const triangle = (ctx, w, h) => {
+        ctx.beginPath();
+        ctx.moveTo(w / 2, 0);
+        ctx.lineTo(0, h);
+        ctx.lineTo(w, h);
+        ctx.closePath();
+        ctx.stroke();
+      };
+      const horizon = (ctx, w, h) => {
+        ctx.beginPath();
+        ctx.moveTo(0, h / 3);
+        ctx.lineTo(w, h / 3);
+        ctx.moveTo(0, (2 * h) / 3);
+        ctx.lineTo(w, (2 * h) / 3);
+        ctx.stroke();
+      };
+      const verticals = (ctx, w, h) => {
+        ctx.beginPath();
+        ctx.moveTo(w / 3, 0);
+        ctx.lineTo(w / 3, h);
+        ctx.moveTo((2 * w) / 3, 0);
+        ctx.lineTo((2 * w) / 3, h);
+        ctx.stroke();
+      };
+    const diagX = (ctx, w, h) => {
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(w, h);
+    ctx.moveTo(w, 0);
+    ctx.lineTo(0, h);
+    ctx.stroke();
+    };
+    const goldenRatioGrid = (ctx, w, h) => {
+    const phi = 0.61803398875;
+    const x1 = w * phi;
+    const x2 = w * (1 - phi);
+    const y1 = h * phi;
+    const y2 = h * (1 - phi);
+    ctx.beginPath();
+    ctx.moveTo(x1, 0);
+    ctx.lineTo(x1, h);
+    ctx.moveTo(x2, 0);
+    ctx.lineTo(x2, h);
+    ctx.moveTo(0, y1);
+    ctx.lineTo(w, y1);
+    ctx.moveTo(0, y2);
+    ctx.lineTo(w, y2);
+    ctx.stroke();
+    };
+    const diamond = (ctx, w, h) => {
+    ctx.beginPath();
+    ctx.moveTo(w / 2, 0);
+    ctx.lineTo(w, h / 2);
+    ctx.lineTo(w / 2, h);
+    ctx.lineTo(0, h / 2);
+    ctx.closePath();
+    ctx.stroke();
+    };
+    const doubleFrame = (ctx, w, h) => {
+    const m1 = Math.min(w, h) * 0.10;
+    const m2 = Math.min(w, h) * 0.22;
+    ctx.beginPath();
+    ctx.rect(m1, m1, w - 2 * m1, h - 2 * m1);
+    ctx.rect(m2, m2, w - 2 * m2, h - 2 * m2);
+    ctx.stroke();
+    };
+    const offsetFrame = (ctx, w, h) => {
+    const m = Math.min(w, h) * 0.14;
+    const dx = Math.min(w, h) * 0.06;
+    const dy = Math.min(w, h) * 0.04;
+    ctx.beginPath();
+    ctx.rect(m, m, w - 2 * m, h - 2 * m);
+    ctx.rect(m + dx, m + dy, w - 2 * (m + dx), h - 2 * (m + dy));
+    ctx.stroke();
+    };
+    const goldenSpiral = (ctx, w, h) => {
+    const m = Math.min(w, h) * 0.05;
+    const ww = Math.max(1, w - 2 * m);
+    const hh = Math.max(1, h - 2 * m);
+    const cx = m + ww * 0.61803398875;
+    const cy = m + hh * 0.38196601125;
+    const phi = (1 + Math.sqrt(5)) / 2;
+    const maxR = Math.min(ww, hh) * 0.52;
+    const thetaMax = Math.PI * 2.75;
+    const a = maxR / Math.pow(phi, (2 * thetaMax) / Math.PI);
+    ctx.beginPath();
+    const steps = 220;
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * thetaMax;
+      const r = a * Math.pow(phi, (2 * t) / Math.PI);
+      const x = cx + r * Math.cos(t);
+      const y = cy + r * Math.sin(t);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    };
+    const armature = (ctx, w, h) => {
+    // Armature of the rectangle: diagonals + corner-to-midpoint lines.
+    ctx.beginPath();
+    // diagonals
+    ctx.moveTo(0, 0);
+    ctx.lineTo(w, h);
+    ctx.moveTo(w, 0);
+    ctx.lineTo(0, h);
+    // corner to opposite midpoint
+    ctx.moveTo(0, 0);
+    ctx.lineTo(w / 2, h);
+    ctx.moveTo(w, 0);
+    ctx.lineTo(w / 2, h);
+    ctx.moveTo(0, h);
+    ctx.lineTo(w / 2, 0);
+    ctx.moveTo(w, h);
+    ctx.lineTo(w / 2, 0);
+    // center cross
+    ctx.moveTo(w / 2, 0);
+    ctx.lineTo(w / 2, h);
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+    };
+    const grid4 = (ctx, w, h) => {
+    ctx.beginPath();
+    for (let i = 1; i < 4; i++) {
+      ctx.moveTo((w * i) / 4, 0);
+      ctx.lineTo((w * i) / 4, h);
+      ctx.moveTo(0, (h * i) / 4);
+      ctx.lineTo(w, (h * i) / 4);
+    }
+    ctx.stroke();
+    };
+    const grid5 = (ctx, w, h) => {
+    ctx.beginPath();
+    for (let i = 1; i < 5; i++) {
+      ctx.moveTo((w * i) / 5, 0);
+      ctx.lineTo((w * i) / 5, h);
+      ctx.moveTo(0, (h * i) / 5);
+      ctx.lineTo(w, (h * i) / 5);
+    }
+    ctx.stroke();
+    };
+    const oddsGuide = (ctx, w, h) => {
+    // Three vertical zones + small markers on 1/3 and 2/3 heights.
+    const x1 = w / 3;
+    const x2 = (2 * w) / 3;
+    const y1 = h / 3;
+    const y2 = (2 * h) / 3;
+    const tick = Math.min(w, h) * 0.06;
+    ctx.beginPath();
+    ctx.moveTo(x1, 0);
+    ctx.lineTo(x1, h);
+    ctx.moveTo(x2, 0);
+    ctx.lineTo(x2, h);
+    for (const x of [x1, x2]) {
+      ctx.moveTo(x - tick, y1);
+      ctx.lineTo(x + tick, y1);
+      ctx.moveTo(x - tick, y2);
+      ctx.lineTo(x + tick, y2);
+    }
+    ctx.stroke();
+    };
+    const topBottomHeavy = (ctx, w, h) => {
+    const yTop = h * 0.25;
+    const yBottom = h * 0.75;
+    const r = Math.min(w, h) * 0.12;
+    ctx.beginPath();
+    ctx.moveTo(0, yTop);
+    ctx.lineTo(w, yTop);
+    ctx.moveTo(0, yBottom);
+    ctx.lineTo(w, yBottom);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(w / 2, yTop, r, 0, Math.PI * 2);
+    ctx.arc(w / 2, yBottom, r, 0, Math.PI * 2);
+    ctx.stroke();
+    };
+    const ellipseRings = (ctx, w, h) => {
+    const cx = w / 2;
+    const cy = h / 2;
+    const rx = w * 0.38;
+    const ry = h * 0.28;
+    ctx.beginPath();
+    for (const k of [1, 0.72, 0.46]) {
+      ctx.ellipse(cx, cy, rx * k, ry * k, 0, 0, Math.PI * 2);
+    }
+    ctx.stroke();
+    };
+
+      return [
+        { id: 'c1', label: '1', draw: thirds },
+        { id: 'c2', label: '2', draw: centerCross },
+        { id: 'c3', label: '3', draw: diagTLBR },
+        { id: 'c4', label: '4', draw: diagTRBL },
+        { id: 'c5', label: '5', draw: frameInset },
+        { id: 'c6', label: '6', draw: circleCenter },
+        { id: 'c7', label: '7', draw: triangle },
+        { id: 'c8', label: '8', draw: horizon },
+        { id: 'c9', label: '9', draw: verticals },
+		{ id: 'c10', label: '10', draw: diagX },
+		{ id: 'c11', label: '11', draw: goldenRatioGrid },
+		{ id: 'c12', label: '12', draw: diamond },
+    { id: 'c13', label: '13', draw: doubleFrame },
+    { id: 'c14', label: '14', draw: offsetFrame },
+    { id: 'c15', label: '15', draw: goldenSpiral },
+    { id: 'c16', label: '16', draw: armature },
+    { id: 'c17', label: '17', draw: grid4 },
+    { id: 'c18', label: '18', draw: grid5 },
+    { id: 'c19', label: '19', draw: oddsGuide },
+    { id: 'c20', label: '20', draw: topBottomHeavy },
+    { id: 'c21', label: '21', draw: ellipseRings },
+      ];
+    }
+
+    initCompositionView() {
+      // Restore previous selection (if any) and build thumbs lazily.
+      this.restoreCompositionFromStorage();
+      this.renderCompositionThumbs();
+      this.resizeCompositionOverlay();
+      this.renderCompositionOverlay();
+    }
+
+    renderCompositionThumbs() {
+      if (!(this.compositionGrid instanceof HTMLElement)) return;
+      const grid = this.compositionGrid;
+      if (grid.dataset.built === '1') {
+        this.updateCompositionThumbSelection();
+        return;
+      }
+      grid.dataset.built = '1';
+      grid.innerHTML = '';
+
+      for (const comp of this.getCompositions()) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'composition-item';
+        btn.dataset.compositionId = comp.id;
+        btn.setAttribute('aria-label', `Compositie ${comp.label}`);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 140;
+        canvas.height = 140;
+        btn.appendChild(canvas);
+
+        btn.addEventListener('click', () => {
+          const next = String(comp.id);
+          this.selectedCompositionId = this.selectedCompositionId === next ? '' : next;
+          this.persistCompositionToStorage();
+          this.updateCompositionThumbSelection();
+          this.renderCompositionOverlay();
+        });
+
+        grid.appendChild(btn);
+
+        // Draw thumbnail.
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = this.getCompositionStrokeStyle();
+        ctx.lineWidth = 2;
+        comp.draw(ctx, canvas.width, canvas.height);
+      }
+
+      this.updateCompositionThumbSelection();
+    }
+
+    updateCompositionThumbSelection() {
+      if (!(this.compositionGrid instanceof HTMLElement)) return;
+      const selected = String(this.selectedCompositionId || '');
+      const buttons = this.compositionGrid.querySelectorAll('.composition-item');
+      for (const el of buttons) {
+        if (!(el instanceof HTMLElement)) continue;
+        const id = el.dataset ? String(el.dataset.compositionId || '') : '';
+        el.classList.toggle('is-selected', !!selected && id === selected);
+      }
+    }
+
+    resizeCompositionOverlay() {
+      if (!(this.canvas instanceof HTMLCanvasElement)) return;
+      if (!(this.compositionOverlay instanceof HTMLCanvasElement)) return;
+      const overlay = this.compositionOverlay;
+
+      const canvasRect = this.canvas.getBoundingClientRect();
+      const parent = this.canvas.parentElement;
+      const parentRect = parent ? parent.getBoundingClientRect() : null;
+      if (!parentRect) return;
+
+      const left = canvasRect.left - parentRect.left;
+      const top = canvasRect.top - parentRect.top;
+      overlay.style.left = `${left}px`;
+      overlay.style.top = `${top}px`;
+      overlay.style.width = `${canvasRect.width}px`;
+      overlay.style.height = `${canvasRect.height}px`;
+
+      const dpr = window.devicePixelRatio || 1;
+      overlay.width = Math.max(1, Math.round(canvasRect.width * dpr));
+      overlay.height = Math.max(1, Math.round(canvasRect.height * dpr));
+      const ctx = overlay.getContext('2d');
+      if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    renderCompositionOverlay() {
+      if (!(this.compositionOverlay instanceof HTMLCanvasElement)) return;
+      const overlay = this.compositionOverlay;
+      const ctx = overlay.getContext('2d');
+      if (!ctx) return;
+
+      const rect = overlay.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      ctx.clearRect(0, 0, w, h);
+
+      const id = String(this.selectedCompositionId || '');
+      if (!id) return;
+      const comp = this.getCompositions().find((c) => c && c.id === id);
+      if (!comp) return;
+
+      ctx.strokeStyle = this.getCompositionStrokeStyle();
+      ctx.lineWidth = 2;
+      comp.draw(ctx, w, h);
     }
 
     getConceptValue() {
@@ -3925,7 +4327,8 @@
     const minDist = 2;
 
     overlay.addEventListener('pointerdown', (evt) => {
-      if (evt.button !== 0) return;
+      // On touch/pen, `button` can differ across browsers; only gate on mouse.
+      if (evt.pointerType === 'mouse' && evt.button !== 0) return;
 
       const p = getPos(evt);
 
@@ -4044,6 +4447,7 @@
 
       this.drawPath = [p];
       drawOverlayPath();
+	  evt.preventDefault();
     });
 
     overlay.addEventListener('pointermove', (evt) => {
@@ -4204,6 +4608,7 @@
 
         this.drawPath.push(p);
         drawOverlayPath();
+		evt.preventDefault();
         return;
       }
 
@@ -4325,6 +4730,7 @@
       this.applyToActiveShape();
 
       drawOverlayPath();
+	  evt.preventDefault();
     };
 
     overlay.addEventListener('pointerup', finish);
@@ -4806,6 +5212,41 @@
 		if (!Number.isFinite(raw)) return 1;
     return Math.max(1, Math.min(100, Math.round(raw)));
 	}
+
+  getCompositionStorageKeys() {
+    return {
+      composition: `${APP_ID}.composition`,
+    };
+  }
+
+  restoreCompositionFromStorage() {
+    const store = this.getConceptStorage();
+    if (!store) return;
+    const keys = this.getCompositionStorageKeys();
+    const id = store.getItem(keys.composition);
+    if (!id) return;
+    const exists = this.getCompositions().some((c) => c && c.id === String(id));
+    this.selectedCompositionId = exists ? String(id) : '';
+  }
+
+  persistCompositionToStorage() {
+    const store = this.getConceptStorage();
+    if (!store) return;
+    const keys = this.getCompositionStorageKeys();
+    try {
+      if (this.selectedCompositionId) store.setItem(keys.composition, String(this.selectedCompositionId));
+      else store.removeItem(keys.composition);
+    } catch (_) {}
+  }
+
+  clearCompositionStorage() {
+    const store = this.getConceptStorage();
+    if (!store) return;
+    const keys = this.getCompositionStorageKeys();
+    try {
+      store.removeItem(keys.composition);
+    } catch (_) {}
+  }
 
     populateOptions() {
       this.select.innerHTML = '';

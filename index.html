@@ -33,6 +33,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 					</button>
 					<nav class="topnav" id="topnav">
 						<a href="#" data-right-view="start">Concept</a>
+						<a href="#" data-right-view="composition">Compositie</a>
 						<a href="#" data-right-view="colors">Kleuren</a>
 						<a href="#" data-right-view="patterns">Patronen</a>
 						<a href="#" data-right-view="shapes">Vormen</a>
@@ -67,6 +68,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 				<main class="panel panel--center" id="centerPanel">
 					<div class="panel__body">
 						<canvas id="mainCanvas" aria-label="Canvas"></canvas>
+						<canvas id="compositionOverlay" aria-label="Compositie overlay"></canvas>
 					</div>
 				</main>
 
@@ -85,6 +87,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 								<button id="exportPdfBtn" class="layers__action" type="button">Exporteer PDF</button>
 								<button id="clearConceptBtn" class="layers__action" type="button">Wissen</button>
 							</div>
+						</div>
+						<div id="rightViewComposition" data-right-view="composition" hidden>
+							<label class="field">Compositie</label>
+							<div id="compositionGrid" class="composition-grid" aria-label="Compositie schetsen"></div>
 						</div>
 						<div id="rightViewPatterns" data-right-view="patterns">
 							<label class="field" for="patternSelect">Patroon</label>

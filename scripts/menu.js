@@ -1865,6 +1865,7 @@
       if (!jsPDF) return Promise.resolve(false);
 
       const concept = opts && typeof opts.concept === 'string' ? opts.concept : '';
+      const description = opts && typeof opts.description === 'string' ? opts.description : '';
       const createdAt = opts && Number.isFinite(opts.createdAt) ? Number(opts.createdAt) : Date.now();
       const title = concept.trim() || 'Patronen 2026';
       const dateLine = this.formatDateTimeNl(createdAt);
@@ -1893,6 +1894,18 @@
           doc.setFontSize(11);
           doc.text(dateLine, margin, y);
           y += 18;
+
+          const desc = description.trim();
+          if (desc) {
+            const lines = doc.splitTextToSize(desc, maxW);
+            const blockH = Math.max(14, lines.length * 14);
+            if (y + blockH > pageH - margin) {
+              doc.addPage();
+              y = margin;
+            }
+            doc.text(lines, margin, y);
+            y += blockH + 14;
+          }
 
           if (sorted.length === 0) {
             doc.setFontSize(12);
@@ -2419,7 +2432,7 @@
           .catch(() => {})
           .then(() => {
             if (this.rightView === 'images') this.renderSavedImages();
-            return this.exportSavedImagesPdf({ concept, createdAt: record.createdAt }).catch(() => false);
+            return this.exportSavedImagesPdf({ concept, description, createdAt: record.createdAt }).catch(() => false);
           })
           .catch(() => {});
 

@@ -1384,6 +1384,10 @@
       this.repeat = qs('patternRepeat');
       this.repeatValue = qs('patternRepeatValue');
       this.palette = qs('palette');
+    this.colorBarPrimary = qs('colorBarPrimary');
+    this.colorBarComplement = qs('colorBarComplement');
+    this.colorBarSupportA = qs('colorBarSupportA');
+    this.colorBarSupportB = qs('colorBarSupportB');
 	  this.thickness = qs('patternThickness');
 	  this.thicknessValue = qs('patternThicknessValue');
       this.tileScaleToShape = qs('tileScaleToShape');
@@ -3587,6 +3591,144 @@
     }
 
     if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
+    this.updateColorBars();
+  }
+
+  parseCssRgb(color) {
+    const s = typeof color === 'string' ? color.trim() : '';
+    if (!s) return null;
+    const m = s.match(/rgba?\(([^)]+)\)/i);
+    if (!m) return null;
+    const parts = m[1].split(',').map((p) => p.trim());
+    if (parts.length < 3) return null;
+    const r = Number(parts[0]);
+    const g = Number(parts[1]);
+    const b = Number(parts[2]);
+    if (![r, g, b].every((v) => Number.isFinite(v))) return null;
+    return {
+      r: Math.max(0, Math.min(255, Math.round(r))),
+      g: Math.max(0, Math.min(255, Math.round(g))),
+      b: Math.max(0, Math.min(255, Math.round(b))),
+    };
+  }
+
+  rgbToHsl(rgb) {
+    const r = rgb.r / 255;
+    const g = rgb.g / 255;
+    const b = rgb.b / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h = 0;
+    let s = 0;
+    const l = (max + min) / 2;
+    const d = max - min;
+    if (d !== 0) {
+      s = d / (1 - Math.abs(2 * l - 1));
+      s = Number.isFinite(s) ? s : 0;
+      s = Math.max(0, Math.min(1, s));
+      s *= 100;
+      s = Math.max(0, Math.min(100, s));
+      s = Number.isFinite(s) ? s : 0;
+      s = Math.round(s);
+
+      switch (max) {
+        case r:
+          h = ((g - b) / d) % 6;
+          break;
+        case g:
+          h = (b - r) / d + 2;
+          break;
+        default:
+          h = (r - g) / d + 4;
+          break;
+      }
+      h = Math.round(h * 60);
+      if (h < 0) h += 360;
+    }
+    let ll = Math.round(l * 100);
+    ll = Math.max(0, Math.min(100, ll));
+    return { h, s, l: ll };
+  }
+
+  hslToRgb(hsl) {
+    const h = ((hsl.h % 360) + 360) % 360;
+    const s = Math.max(0, Math.min(100, hsl.s)) / 100;
+    const l = Math.max(0, Math.min(100, hsl.l)) / 100;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    let rp = 0;
+    let gp = 0;
+    let bp = 0;
+    if (h < 60) {
+      rp = c;
+      gp = x;
+      bp = 0;
+    } else if (h < 120) {
+      rp = x;
+      gp = c;
+      bp = 0;
+    } else if (h < 180) {
+      rp = 0;
+      gp = c;
+      bp = x;
+    } else if (h < 240) {
+      rp = 0;
+      gp = x;
+      bp = c;
+    } else if (h < 300) {
+      rp = x;
+      gp = 0;
+      bp = c;
+    } else {
+      rp = c;
+      gp = 0;
+      bp = x;
+    }
+    return {
+      r: Math.max(0, Math.min(255, Math.round((rp + m) * 255))),
+      g: Math.max(0, Math.min(255, Math.round((gp + m) * 255))),
+      b: Math.max(0, Math.min(255, Math.round((bp + m) * 255))),
+    };
+  }
+
+  rgbaCss(rgb, alpha) {
+    const a = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${a})`;
+  }
+
+  renderColorBar(el, baseHsl, alpha) {
+    if (!(el instanceof HTMLElement)) return;
+    el.innerHTML = '';
+    const steps = 16;
+    for (let i = 0; i < steps; i++) {
+      const t = steps === 1 ? 0 : i / (steps - 1);
+      const l = Math.round(92 + (18 - 92) * t);
+      const rgb = this.hslToRgb({ h: baseHsl.h, s: baseHsl.s, l });
+      const sw = document.createElement('div');
+      sw.className = 'colorbar__swatch';
+      sw.style.backgroundColor = this.rgbaCss(rgb, alpha);
+      el.appendChild(sw);
+    }
+  }
+
+  updateColorBars() {
+    const els = [this.colorBarPrimary, this.colorBarComplement, this.colorBarSupportA, this.colorBarSupportB];
+    if (!els.some((el) => el instanceof HTMLElement)) return;
+
+    const normalized = this.normalizeCssColor(this.currentColor);
+    const rgb = this.parseCssRgb(normalized);
+    if (!rgb) return;
+
+    const hsl = this.rgbToHsl(rgb);
+    const complement = { h: (hsl.h + 180) % 360, s: hsl.s, l: hsl.l };
+    const supportA = { h: (complement.h + 30) % 360, s: complement.s, l: complement.l };
+    const supportB = { h: (complement.h + 360 - 30) % 360, s: complement.s, l: complement.l };
+
+    this.renderColorBar(this.colorBarPrimary, hsl, 0.8);
+    this.renderColorBar(this.colorBarComplement, complement, 0.1);
+    this.renderColorBar(this.colorBarSupportA, supportA, 0.05);
+    this.renderColorBar(this.colorBarSupportB, supportB, 0.05);
   }
 
   normalizeCssColor(color) {

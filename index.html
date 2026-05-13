@@ -78,6 +78,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							<div class="pattern-preview" id="patternPreview" role="img" aria-label="Patroon preview"></div>
 							<label class="field" for="patternRepeat">Tegels: <span id="patternRepeatValue">10</span></label>
 							<input id="patternRepeat" class="range" type="range" min="1" max="100" step="1" value="10" />
+							<label class="field">Kleur</label>
+							<div id="palette" class="palette" role="listbox" aria-label="Kleurenpalet"></div>
 							<label class="field" for="patternThickness">Lijndikte: <span id="patternThicknessValue">1</span></label>
 							<input id="patternThickness" class="range" type="range" min="1" max="100" step="1" value="1" />
 							<label class="toggle">
@@ -86,8 +88,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							</label>
 						</div>
 						<div id="rightViewColors" data-right-view="colors" hidden>
-							<label class="field">Kleur</label>
-							<div id="palette" class="palette" role="listbox" aria-label="Kleurenpalet"></div>
+							<div class="colorbars" id="colorBars" aria-label="Kleurverdeling">
+								<div class="colorbars__item">
+									<div class="field">80%</div>
+									<div class="colorbar" id="colorBarPrimary" role="img" aria-label="Kleurenstaaf 80%"></div>
+								</div>
+								<div class="colorbars__item">
+									<div class="field">10%</div>
+									<div class="colorbar" id="colorBarComplement" role="img" aria-label="Kleurenstaaf 10%"></div>
+								</div>
+								<div class="colorbars__item">
+									<div class="field">5%</div>
+									<div class="colorbar" id="colorBarSupportA" role="img" aria-label="Kleurenstaaf 5% A"></div>
+								</div>
+								<div class="colorbars__item">
+									<div class="field">5%</div>
+									<div class="colorbar" id="colorBarSupportB" role="img" aria-label="Kleurenstaaf 5% B"></div>
+								</div>
+							</div>
 						</div>
 						<div id="rightViewImages" data-right-view="images" hidden>
 							<label class="field">Opgeslagen afbeeldingen</label>

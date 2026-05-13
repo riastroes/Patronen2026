@@ -1811,6 +1811,130 @@
       return cleaned.slice(0, 80);
     }
 
+    getJsPDF() {
+      // Loaded via UMD bundle: window.jspdf.jsPDF
+      const jspdf = window.jspdf;
+      const jsPDF = jspdf && jspdf.jsPDF;
+      return typeof jsPDF === 'function' ? jsPDF : null;
+    }
+
+    formatDateTimeNl(ts) {
+      const t = Number(ts);
+      const d = new Date(Number.isFinite(t) ? t : Date.now());
+      try {
+        return d.toLocaleString('nl-NL', {
+          year: 'numeric',
+          month: 'long',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      } catch (_) {
+        return d.toISOString();
+      }
+    }
+
+    formatDateStamp(ts) {
+      const t = Number(ts);
+      const d = new Date(Number.isFinite(t) ? t : Date.now());
+      const pad = (n) => String(n).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      const mm = pad(d.getMonth() + 1);
+      const dd = pad(d.getDate());
+      const hh = pad(d.getHours());
+      const mi = pad(d.getMinutes());
+      const ss = pad(d.getSeconds());
+      return `${yyyy}${mm}${dd}-${hh}${mi}${ss}`;
+    }
+
+    blobToDataUrl(blob) {
+      return new Promise((resolve, reject) => {
+        if (!(blob instanceof Blob)) {
+          reject(new Error('Not a blob'));
+          return;
+        }
+        const r = new FileReader();
+        r.onerror = () => reject(r.error || new Error('FileReader failed'));
+        r.onload = () => resolve(typeof r.result === 'string' ? r.result : '');
+        r.readAsDataURL(blob);
+      });
+    }
+
+    exportSavedImagesPdf(opts) {
+      const jsPDF = this.getJsPDF();
+      if (!jsPDF) return Promise.resolve(false);
+
+      const concept = opts && typeof opts.concept === 'string' ? opts.concept : '';
+      const createdAt = opts && Number.isFinite(opts.createdAt) ? Number(opts.createdAt) : Date.now();
+      const title = concept.trim() || 'Patronen 2026';
+      const dateLine = this.formatDateTimeNl(createdAt);
+
+      return this.savedImagesDB
+        .getAll()
+        .catch(() => [])
+        .then(async (items) => {
+          const sorted = (Array.isArray(items) ? items : [])
+            .filter((it) => it && typeof it.id === 'string' && it.blob instanceof Blob)
+            .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+
+          const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
+          const pageW = doc.internal.pageSize.getWidth();
+          const pageH = doc.internal.pageSize.getHeight();
+          const margin = 40;
+          const maxW = pageW - margin * 2;
+
+          let y = margin;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(18);
+          doc.text(title, margin, y);
+          y += 22;
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(11);
+          doc.text(dateLine, margin, y);
+          y += 18;
+
+          if (sorted.length === 0) {
+            doc.setFontSize(12);
+            doc.text('Nog geen opgeslagen afbeeldingen.', margin, y + 10);
+          } else {
+            for (const it of sorted) {
+              const dataUrl = await this.blobToDataUrl(it.blob).catch(() => '');
+              if (!dataUrl) continue;
+
+              const iw = Math.max(1, Number(it.w) || 1);
+              const ih = Math.max(1, Number(it.h) || 1);
+              let drawW = maxW;
+              let drawH = (drawW * ih) / iw;
+
+              const availableH = pageH - margin - y;
+              if (drawH > availableH) {
+                if (y > margin + 60) {
+                  doc.addPage();
+                  y = margin;
+                }
+              }
+
+              const availableH2 = pageH - margin - y;
+              if (drawH > availableH2) {
+                drawH = Math.max(1, availableH2);
+                drawW = (drawH * iw) / ih;
+              }
+
+              doc.addImage(dataUrl, 'PNG', margin, y, drawW, drawH);
+              y += drawH + 16;
+            }
+          }
+
+          const stem = this.sanitizeFileStem(title) || 'patronen2026';
+          const stamp = this.formatDateStamp(createdAt);
+          // Note: browsers do not guarantee saving into folders; this name is still helpful.
+          const fileName = `pdf/${stem}-${stamp}.pdf`;
+          doc.save(fileName);
+          return true;
+        });
+    }
+
     clearSavedImagesObjectUrls() {
       for (const u of this.savedImagesObjectUrls) {
         try {
@@ -2289,10 +2413,15 @@
           blob,
         };
 
-        this.savedImagesDB.put(record).catch(() => {});
-
-        // If the images view is open, refresh it.
-        if (this.rightView === 'images') this.renderSavedImages();
+        // Persist, refresh UI, then auto-export a PDF with all saved images.
+        this.savedImagesDB
+          .put(record)
+          .catch(() => {})
+          .then(() => {
+            if (this.rightView === 'images') this.renderSavedImages();
+            return this.exportSavedImagesPdf({ concept, createdAt: record.createdAt }).catch(() => false);
+          })
+          .catch(() => {});
 
         // After saving a cropped export, remove the crop grid.
         if (usedCropRect) clearCropSelection();

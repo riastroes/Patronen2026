@@ -205,6 +205,25 @@ body.right-collapsed #rightPanel {
   margin: 0 0 12px;
 }
 
+.text-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  margin: 0 0 12px;
+}
+
+.textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  margin: 0 0 12px;
+  resize: vertical;
+}
+
 .range {
   width: 100%;
   margin: 0 0 12px;

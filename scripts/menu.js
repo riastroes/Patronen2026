@@ -1370,6 +1370,7 @@
     constructor() {
       this.select = qs('patternSelect');
       this.preview = qs('patternPreview');
+      this.rightViewStart = qs('rightViewStart');
       this.rightViewPatterns = qs('rightViewPatterns');
       this.rightViewColors = qs('rightViewColors');
       this.rightViewImages = qs('rightViewImages');
@@ -1395,11 +1396,14 @@
 	  this.thicknessValue = qs('patternThicknessValue');
       this.tileScaleToShape = qs('tileScaleToShape');
 
+      this.conceptInput = qs('conceptInput');
+      this.descriptionInput = qs('descriptionInput');
+
     this.modeDrawBtn = qs('modeDrawBtn');
     this.modeSelectBtn = qs('modeSelectBtn');
     this.interactionMode = 'draw'; // 'draw' | 'select'
 
-    this.rightView = 'patterns';
+    this.rightView = 'start';
     this.savedImagesDB = new SavedImagesDB();
   this.savedShapesDB = new SavedShapesDB();
     this.savedImagesObjectUrls = [];
@@ -1739,7 +1743,7 @@
       this.applySelection(initial || '');
 
       // Reset view.
-      this.setRightView('patterns');
+	  this.setRightView('start');
 
       // Clear layers list UI.
       this.renderLayersList();
@@ -1751,15 +1755,20 @@
     }
 
     setRightView(view) {
-      const next = view === 'images'
-        ? 'images'
-        : view === 'shapes'
-          ? 'shapes'
-          : view === 'colors'
-            ? 'colors'
-            : 'patterns';
+      const next = view === 'start'
+        ? 'start'
+        : view === 'images'
+          ? 'images'
+          : view === 'shapes'
+            ? 'shapes'
+            : view === 'colors'
+              ? 'colors'
+              : 'patterns';
       this.rightView = next;
 
+      if (this.rightViewStart instanceof HTMLElement) {
+        this.rightViewStart.hidden = next !== 'start';
+      }
       if (this.rightViewPatterns instanceof HTMLElement) {
         this.rightViewPatterns.hidden = next !== 'patterns';
       }
@@ -1780,6 +1789,26 @@
       if (next === 'images') this.renderSavedImages();
       if (next === 'shapes') this.renderSavedShapes();
 	  this.renderColorMixCanvas();
+    }
+
+    getConceptValue() {
+      if (!(this.conceptInput instanceof HTMLInputElement)) return '';
+      return typeof this.conceptInput.value === 'string' ? this.conceptInput.value.trim() : '';
+    }
+
+    getDescriptionValue() {
+      if (!(this.descriptionInput instanceof HTMLTextAreaElement)) return '';
+      return typeof this.descriptionInput.value === 'string' ? this.descriptionInput.value.trim() : '';
+    }
+
+    sanitizeFileStem(name) {
+      const raw = typeof name === 'string' ? name : '';
+      const cleaned = raw
+        .replace(/[\u0000-\u001F\u007F]/g, '')
+        .replace(/[\\/?:%*|"<>]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return cleaned.slice(0, 80);
     }
 
     clearSavedImagesObjectUrls() {
@@ -2241,7 +2270,10 @@
         ctx.drawImage(src, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
       }
 
-      const fileName = 'patronen2026.png';
+      const concept = this.getConceptValue();
+      const description = this.getDescriptionValue();
+      const stem = this.sanitizeFileStem(concept) || 'patronen2026';
+      const fileName = `${stem}.png`;
 
       const saveBlob = (blob) => {
         if (!(blob instanceof Blob)) return;
@@ -2252,6 +2284,8 @@
           w: out.width,
           h: out.height,
           fileName,
+          concept,
+          description,
           blob,
         };
 

@@ -33,10 +33,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 					</button>
 					<nav class="topnav" id="topnav">
 						<a href="#" data-app-action="reset">Start</a>
-						<a href="#" data-right-view="patterns">Patronen</a>
 						<a href="#" data-right-view="colors">Kleuren</a>
-						<a href="#" data-right-view="images">Afbeeldingen</a>
+						<a href="#" data-right-view="patterns">Patronen</a>
 						<a href="#" data-right-view="shapes">Vormen</a>
+						<a href="#" data-right-view="images">Afbeelding</a>
 						<a href="#">Over</a>
 					</nav>
 				</div>
@@ -76,6 +76,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 						<button class="panel__close" id="rightClose" type="button" aria-label="Sluit rechter paneel">×</button>
 					</div>
 					<div class="panel__body">
+						<div id="rightViewStart" data-right-view="start">
+							<label class="field" for="conceptInput">Concept</label>
+							<input id="conceptInput" class="text-input" type="text" autocomplete="off" />
+							<label class="field" for="descriptionInput">Omschrijving</label>
+							<textarea id="descriptionInput" class="textarea" rows="6"></textarea>
+						</div>
 						<div id="rightViewPatterns" data-right-view="patterns">
 							<label class="field" for="patternSelect">Patroon</label>
 							<select id="patternSelect" class="select"></select>

@@ -4923,14 +4923,39 @@
             return;
           }
 
-		  // iPad pen workflow: tapping multiple shapes adds them to selection.
-		  if (evt.pointerType === 'pen') {
-			  this.toggleLayerSelection(clipIdx);
-		  } else {
-			  this.setLayerSelectionSingle(clipIdx);
-		  }
+      // iPad pen workflow: tapping multiple shapes *adds* them to selection (no toggle-off).
+      if (evt.pointerType === 'pen') {
+        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+        const layer = layers[clipIdx];
+        const groupId = layer && typeof layer.groupId === 'string' && layer.groupId.trim() ? layer.groupId.trim() : '';
+        const selected = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
+        const isAlreadySelected = selected.has(clipIdx);
+
+        if (!isAlreadySelected) {
+          const next = new Set(selected);
+          if (groupId) {
+            for (let i = 0; i < layers.length; i++) {
+              const l = layers[i];
+              if (l && typeof l.groupId === 'string' && l.groupId === groupId) next.add(i);
+            }
+          } else {
+            next.add(clipIdx);
+          }
+          this.selectedLayerIndices = next;
+        }
+
+        // Always make the tapped layer active.
+        this.setActiveLayerIndex(clipIdx);
+        this.syncActiveShapeToLayerIndex(clipIdx);
+      } else {
+        this.setLayerSelectionSingle(clipIdx);
+      }
           this.renderLayersList();
           drawOverlayPath();
+
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      const clickedLayer = layers[clipIdx];
+      const clickedClipN = clickedLayer && Array.isArray(clickedLayer.clipPathN) && clickedLayer.clipPathN.length >= 3 ? clickedLayer.clipPathN : null;
 
       // Start resizing if the user grabbed the shape handle.
       const handleBounds = getSelectedClipBoundsPx() || getClipBoundsPxForClipN(this.activeClipPathN);
@@ -4958,9 +4983,9 @@
           this.shapeResizeStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
         }
 				this.shapeResizeStartPos = p;
-				this.shapeResizeStartClipPathN = Array.isArray(this.activeClipPathN)
-					? this.activeClipPathN.map((q) => [q[0], q[1]])
-					: null;
+        this.shapeResizeStartClipPathN = clickedClipN ? clickedClipN.map((q) => [q[0], q[1]]) : (Array.isArray(this.activeClipPathN)
+          ? this.activeClipPathN.map((q) => [q[0], q[1]])
+          : null);
 				this.shapeResizeStartBounds = handleBounds;
 				this.shapeResizeStartDist = handleBounds ? Math.max(0.000001, Math.hypot(p[0] - handleBounds.cx, p[1] - handleBounds.cy)) : 0.000001;
 				overlay.setPointerCapture(evt.pointerId);
@@ -4976,9 +5001,9 @@
             this.dragPointerId = evt.pointerId;
             this.dragLayerIndex = clipIdx;
             this.dragStartPos = p;
-            this.dragStartClipPathN = Array.isArray(this.activeClipPathN)
-              ? this.activeClipPathN.map((q) => [q[0], q[1]])
-              : null;
+      this.dragStartClipPathN = clickedClipN ? clickedClipN.map((q) => [q[0], q[1]]) : (Array.isArray(this.activeClipPathN)
+        ? this.activeClipPathN.map((q) => [q[0], q[1]])
+        : null);
 			// Multi-select: move all selected clip layers together.
 			const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
 			const selected = this.getSelectedLayerIndices();
@@ -5138,9 +5163,14 @@
           this.dragRaf = window.requestAnimationFrame(() => {
             this.dragRaf = 0;
             if (!this.isDraggingShape) return;
-            if (!Array.isArray(this.dragStartClipPathN) || this.dragStartClipPathN.length < 3) return;
             if (!Array.isArray(this.dragStartPos) || this.dragStartPos.length < 2) return;
             if (!Array.isArray(this.dragPendingPos) || this.dragPendingPos.length < 2) return;
+
+			const movedIndices = Array.isArray(this.dragTargetIndices) && this.dragTargetIndices.length ? this.dragTargetIndices : [];
+			const hasLayerStarts = this.dragStartClipByIndex instanceof Map && movedIndices.length;
+			if (!hasLayerStarts) {
+				if (!Array.isArray(this.dragStartClipPathN) || this.dragStartClipPathN.length < 3) return;
+			}
 
             const { w, h } = getOverlaySize();
             const dx = this.dragPendingPos[0] - this.dragStartPos[0];
@@ -5154,7 +5184,6 @@
       let minY = Infinity;
       let maxX = -Infinity;
       let maxY = -Infinity;
-      const movedIndices = Array.isArray(this.dragTargetIndices) && this.dragTargetIndices.length ? this.dragTargetIndices : [];
       if (this.dragStartClipByIndex instanceof Map && movedIndices.length) {
         for (const idx of movedIndices) {
           const clipN = this.dragStartClipByIndex.get(idx);

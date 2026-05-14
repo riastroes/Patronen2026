@@ -1551,6 +1551,8 @@
       this.layersRoot = qs('layersRoot');
 	  this.cropToolBtn = qs('cropToolBtn');
 	  this.saveImageBtn = qs('saveImageBtn');
+    this.cropToolBtnRight = qs('cropToolBtnRight');
+    this.saveImageBtnRight = qs('saveImageBtnRight');
 	  this.exportPdfBtn = qs('exportPdfBtn');
     this.clearConceptBtn = qs('clearConceptBtn');
     this.deleteSavedImageBtn = qs('deleteSavedImageBtn');
@@ -1580,7 +1582,7 @@
     this.rightView = 'start';
     this.savedImagesDB = new SavedImagesDB();
   this.savedShapesDB = new SavedShapesDB();
-    this.savedImagesObjectUrls = [];
+	this.savedImagesObjectUrls = new Map();
 	  this.layerThumbObjectUrls = [];
     this.selectedSavedImageId = '';
     this.savedImagesCache = [];
@@ -2776,13 +2778,33 @@
     }
 
     clearSavedImagesObjectUrls() {
-      for (const u of this.savedImagesObjectUrls) {
-        try {
-          URL.revokeObjectURL(u);
-        } catch (_) {}
-      }
-      this.savedImagesObjectUrls = [];
+    const m = this.savedImagesObjectUrls instanceof Map ? this.savedImagesObjectUrls : new Map();
+    for (const u of m.values()) {
+      try {
+        URL.revokeObjectURL(u);
+      } catch (_) {}
     }
+    this.savedImagesObjectUrls = new Map();
+    }
+
+  reconcileSavedImagesObjectUrls(sortedItems) {
+    const m = this.savedImagesObjectUrls instanceof Map ? this.savedImagesObjectUrls : new Map();
+    const nextIds = new Set(
+      (Array.isArray(sortedItems) ? sortedItems : [])
+        .map((it) => (it && typeof it.id === 'string' ? String(it.id) : ''))
+        .filter(Boolean),
+    );
+
+    for (const [id, url] of m.entries()) {
+      if (!nextIds.has(String(id))) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {}
+        m.delete(id);
+      }
+    }
+    this.savedImagesObjectUrls = m;
+  }
 
     clearLayerThumbObjectUrls() {
       for (const u of this.layerThumbObjectUrls) {
@@ -3023,7 +3045,6 @@
     renderSavedImages() {
       if (!(this.savedImagesRoot instanceof HTMLElement)) return;
 
-      this.clearSavedImagesObjectUrls();
       this.savedImagesRoot.innerHTML = '';
 
       this.savedImagesDB
@@ -3041,12 +3062,19 @@
 
           if (sorted.length === 0) {
             this.savedImagesRoot.textContent = 'Nog geen opgeslagen afbeeldingen.';
+      this.reconcileSavedImagesObjectUrls(sorted);
             return;
           }
 
+      const urlMap = this.savedImagesObjectUrls instanceof Map ? this.savedImagesObjectUrls : new Map();
+
           for (const it of sorted) {
-            const url = URL.createObjectURL(it.blob);
-            this.savedImagesObjectUrls.push(url);
+      const id = String(it.id);
+      let url = urlMap.get(id);
+      if (!url) {
+        url = URL.createObjectURL(it.blob);
+        urlMap.set(id, url);
+      }
 
             const cell = document.createElement('div');
             cell.className = 'saved-images__cell';
@@ -3060,20 +3088,6 @@
       img.decoding = 'async';
       img.loading = 'lazy';
       img.src = url;
-      img.addEventListener('load', () => {
-        window.setTimeout(() => {
-          try {
-            URL.revokeObjectURL(url);
-          } catch (_) {}
-        }, 0);
-      });
-      img.addEventListener('error', () => {
-        window.setTimeout(() => {
-          try {
-            URL.revokeObjectURL(url);
-          } catch (_) {}
-        }, 0);
-      });
       btn.appendChild(img);
 
             const isSelected = String(it.id) === String(this.selectedSavedImageId);
@@ -3113,6 +3127,8 @@
           }
 
 			this.updateSavedImagesSelectionUI();
+			this.savedImagesObjectUrls = urlMap;
+			this.reconcileSavedImagesObjectUrls(sorted);
         })
         .catch(() => {
           this.savedImagesRoot.textContent = 'Kan opgeslagen afbeeldingen niet laden.';
@@ -3149,6 +3165,16 @@
       this.savedImagesDB
         .delete(String(it.id))
         .then(() => {
+			const m = this.savedImagesObjectUrls instanceof Map ? this.savedImagesObjectUrls : new Map();
+			const id = String(it.id);
+			const url = m.get(id);
+			if (url) {
+				try {
+					URL.revokeObjectURL(url);
+				} catch (_) {}
+				m.delete(id);
+			}
+			this.savedImagesObjectUrls = m;
           this.selectedSavedImageId = '';
           this.renderSavedImages();
         })
@@ -3526,9 +3552,11 @@
     }
 
     initImageActions() {
-      if (this.cropToolBtn && this.cropToolBtn.dataset.bound !== '1') {
-        this.cropToolBtn.dataset.bound = '1';
-        this.cropToolBtn.addEventListener('click', () => {
+      const bindCrop = (btn) => {
+        if (!(btn instanceof HTMLButtonElement)) return;
+        if (btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', () => {
           // Crop implies interaction/selection mode.
           this.setInteractionMode('select');
           this.toolMode = 'crop';
@@ -3570,14 +3598,22 @@
           this.renderLayersList();
           if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
         });
-      }
+      };
 
-      if (this.saveImageBtn && this.saveImageBtn.dataset.bound !== '1') {
-        this.saveImageBtn.dataset.bound = '1';
-        this.saveImageBtn.addEventListener('click', () => {
-          this.saveCurrentImage();
-        });
-      }
+      bindCrop(this.cropToolBtn);
+      bindCrop(this.cropToolBtnRight);
+
+	  const bindSave = (btn) => {
+		if (!(btn instanceof HTMLButtonElement)) return;
+		if (btn.dataset.bound === '1') return;
+		btn.dataset.bound = '1';
+		btn.addEventListener('click', () => {
+			this.saveCurrentImage();
+		});
+	  };
+
+	  bindSave(this.saveImageBtn);
+	  bindSave(this.saveImageBtnRight);
     }
 
   updateAboutPublishTimestamp() {

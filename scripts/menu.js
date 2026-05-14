@@ -2854,7 +2854,13 @@
         ghost.style.backgroundSize = 'cover';
         ghost.style.zIndex = '999999';
         const bg = btn.style && btn.style.backgroundImage ? btn.style.backgroundImage : '';
-        if (bg) ghost.style.backgroundImage = bg;
+        if (bg) {
+			ghost.style.backgroundImage = bg;
+		} else {
+			const childImg = btn.querySelector('img');
+			const src = childImg instanceof HTMLImageElement ? (childImg.currentSrc || childImg.src) : '';
+			if (src) ghost.style.backgroundImage = `url("${src}")`;
+		}
         document.body.appendChild(ghost);
         return ghost;
       };
@@ -3048,7 +3054,27 @@
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'saved-images__item';
-            btn.style.backgroundImage = `url("${url}")`;
+
+      const img = document.createElement('img');
+      img.alt = '';
+      img.decoding = 'async';
+      img.loading = 'lazy';
+      img.src = url;
+      img.addEventListener('load', () => {
+        window.setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch (_) {}
+        }, 0);
+      });
+      img.addEventListener('error', () => {
+        window.setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch (_) {}
+        }, 0);
+      });
+      btn.appendChild(img);
 
             const isSelected = String(it.id) === String(this.selectedSavedImageId);
             if (isSelected) btn.classList.add('is-selected');

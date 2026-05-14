@@ -1093,18 +1093,32 @@
       if (!(blob instanceof Blob)) return Promise.reject(new Error('Invalid image blob'));
 
       const cached = this.savedImageCache.get(key);
-      if (cached && cached.img && cached.img.complete) return Promise.resolve(cached.img);
+      if (cached && cached.img && cached.img.complete && cached.img.naturalWidth > 0 && cached.img.naturalHeight > 0) {
+		return Promise.resolve(cached.img);
+	  }
       if (cached && cached.promise) return cached.promise;
 
       const img = new Image();
       const promise = new Promise((resolve, reject) => {
         const blobUrl = URL.createObjectURL(blob);
         img.onload = () => {
-          URL.revokeObjectURL(blobUrl);
+          // iOS Safari can show blank results if revoked too early; revoke async.
+          window.setTimeout(() => {
+			try {
+				URL.revokeObjectURL(blobUrl);
+			} catch (_) {}
+		  }, 0);
           resolve(img);
         };
         img.onerror = () => {
-          URL.revokeObjectURL(blobUrl);
+          window.setTimeout(() => {
+			try {
+				URL.revokeObjectURL(blobUrl);
+			} catch (_) {}
+		  }, 0);
+		  try {
+			this.savedImageCache.delete(key);
+		  } catch (_) {}
           reject(new Error('Failed to load saved image'));
         };
         img.src = blobUrl;

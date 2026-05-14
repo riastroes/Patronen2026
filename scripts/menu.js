@@ -1520,6 +1520,7 @@
       this.preview = qs('patternPreview');
       this.rightViewStart = qs('rightViewStart');
 	  this.rightViewAbout = qs('rightViewAbout');
+	  this.aboutPublishTime = qs('aboutPublishTime');
       this.rightViewComposition = qs('rightViewComposition');
       this.compositionGrid = qs('compositionGrid');
       this.rightViewPatterns = qs('rightViewPatterns');
@@ -1672,6 +1673,9 @@
 
       // Migrate legacy IndexedDB/localStorage from previous app name.
       this.migrateLegacyAppData().catch(() => {});
+
+	  // Fill About panel with a dynamic "publication" timestamp.
+	  this.updateAboutPublishTimestamp();
 
 	  this.initCompositionView();
 
@@ -3297,6 +3301,69 @@
         });
       }
     }
+
+  updateAboutPublishTimestamp() {
+    const el = this.aboutPublishTime;
+    if (!(el instanceof HTMLElement)) return;
+
+    // Show cached value immediately (useful offline).
+    try {
+      const cached = localStorage.getItem('ontwerpstudio2026:publishText');
+      if (typeof cached === 'string' && cached.trim()) el.textContent = cached.trim();
+    } catch (_) {
+      // ignore
+    }
+
+    const formatNl = (iso) => {
+      if (typeof iso !== 'string' || !iso.trim()) return '';
+      const d = new Date(iso);
+      if (!Number.isFinite(d.getTime())) return '';
+      const tz = 'Europe/Amsterdam';
+      const dateText = new Intl.DateTimeFormat('nl-NL', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        timeZone: tz,
+      }).format(d);
+      const timeText = new Intl.DateTimeFormat('nl-NL', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: tz,
+      }).format(d);
+      return `${dateText} ${timeText}`;
+    };
+
+    // Dynamic: use GitHub API so it updates automatically on each push.
+    const url = 'https://api.github.com/repos/riastroes/Ontwerpstudio2026/commits/main';
+    fetch(url, {
+      cache: 'no-store',
+      headers: { Accept: 'application/vnd.github+json' },
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`GitHub API HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        const iso =
+          data && data.commit && data.commit.committer && typeof data.commit.committer.date === 'string'
+            ? data.commit.committer.date
+            : data && data.commit && data.commit.author && typeof data.commit.author.date === 'string'
+              ? data.commit.author.date
+              : '';
+        const text = formatNl(iso);
+        if (!text) return;
+        el.textContent = text;
+        try {
+          localStorage.setItem('ontwerpstudio2026:publishText', text);
+        } catch (_) {
+          // ignore
+        }
+      })
+      .catch(() => {
+        // Keep cached/placeholder value.
+      });
+  }
 
     initLayerReorderDragDrop() {
       if (!(this.layersRoot instanceof HTMLElement)) return;

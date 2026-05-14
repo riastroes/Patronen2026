@@ -2794,7 +2794,11 @@
     startSavedItemPointerDrag(evt, btn, kind, id) {
       if (!evt || !(btn instanceof HTMLElement)) return false;
       if (evt.pointerType === 'mouse') return false;
-	  if (evt.pointerType !== 'pen') return false;
+    const isPen = evt.pointerType === 'pen';
+    const w = Number(evt.width);
+    const h = Number(evt.height);
+    const isPenLikeTouch = evt.pointerType === 'touch' && Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 && w <= 6 && h <= 6;
+    if (!isPen && !isPenLikeTouch) return false;
 
 	  // On iPad/Safari a pointer sequence also fires a click; we handle tap/drag ourselves.
 	  if (btn && btn.dataset) btn.dataset.skipClick = '1';

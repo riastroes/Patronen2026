@@ -4149,7 +4149,44 @@
 
       this.layersRoot.innerHTML = '';
       const selectedSet = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
-  		const isPenTouch = this.lastLayersPointerType === 'pen' || this.lastLayersPointerType === 'touch';
+
+      const addLayerToSelection = (layerIndex) => {
+        const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+        if (idx < 0 || idx >= layers.length) return;
+        const layer = layers[idx];
+        const groupId = layer && typeof layer.groupId === 'string' && layer.groupId.trim() ? layer.groupId.trim() : '';
+        const next = new Set(this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : []);
+        if (groupId) {
+          for (let i = 0; i < layers.length; i++) {
+            const l = layers[i];
+            if (l && typeof l.groupId === 'string' && l.groupId === groupId) next.add(i);
+          }
+        } else {
+          next.add(idx);
+        }
+        this.selectedLayerIndices = next;
+        this.setActiveLayerIndex(idx);
+        this.syncActiveShapeToLayerIndex(idx);
+      };
+
+      const handleLayerListClick = (layerIndex) => {
+        this.setInteractionMode('select');
+        const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+        if (idx < 0) return;
+        const cur = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
+        if (cur.has(idx)) {
+          // If multiple are selected, clicking one focuses it (single selection).
+          if (cur.size > 1) this.setLayerSelectionSingle(idx);
+          else {
+            this.setActiveLayerIndex(idx);
+            this.syncActiveShapeToLayerIndex(idx);
+          }
+        } else {
+          // Add without requiring Shift.
+          addLayerToSelection(idx);
+        }
+        this.renderLayersList();
+      };
 
       // Newest layer first (top of list).
       for (let viewIndex = 0; viewIndex < layers.length; viewIndex++) {
@@ -4175,11 +4212,7 @@
         radio.addEventListener('click', (evt) => {
           evt.preventDefault();
           evt.stopPropagation();
-			this.setInteractionMode('select');
-			if (isPenTouch) this.toggleLayerSelection(i);
-			else if (evt.shiftKey) this.toggleLayerSelection(i);
-			else this.setLayerSelectionSingle(i);
-			this.renderLayersList();
+			handleLayerListClick(i);
         });
 
         const num = document.createElement('span');
@@ -4193,11 +4226,7 @@
         item.addEventListener('click', (evt) => {
           const target = evt.target instanceof HTMLElement ? evt.target : null;
           if (target && (target.closest('button') || target.closest('input') || target.closest('select'))) return;
-          this.setInteractionMode('select');
-			if (isPenTouch) this.toggleLayerSelection(i);
-			else if (evt.shiftKey) this.toggleLayerSelection(i);
-			else this.setLayerSelectionSingle(i);
-          this.renderLayersList();
+      handleLayerListClick(i);
         });
 
         const swatches = document.createElement('span');

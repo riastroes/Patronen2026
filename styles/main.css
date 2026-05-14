@@ -10,6 +10,24 @@ body {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
 
+/* iOS/Pencil: prevent accidental text selection in the UI (keep form fields selectable) */
+#app,
+#app * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app input,
+#app textarea,
+#app select,
+#app option {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
 #app {
   min-height: 100%;
   padding-top: var(--topbar-h);
@@ -139,10 +157,20 @@ body.right-collapsed .layout {
   position: relative;
 }
 
+/* iOS: prevent the blue element highlight/selection on canvas area */
+#centerPanel,
+#centerPanel * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 #mainCanvas {
   width: 100%;
   height: 100%;
   display: block;
+  outline: none;
 }
 
 #compositionOverlay {
@@ -154,11 +182,13 @@ body.right-collapsed .layout {
   display: block;
   pointer-events: none;
   touch-action: none;
+  outline: none;
 }
 
 /* drawOverlay canvas is injected by JS; keep iPad pencil interactions stable */
 #drawOverlay {
   touch-action: none;
+  outline: none;
 }
 
 body.left-collapsed #leftPanel,

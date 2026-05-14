@@ -416,13 +416,58 @@
       return true;
     }
 
+  isBackgroundLayer(layer) {
+    if (!layer || typeof layer !== 'object') return false;
+    if (layer.isBackground === true) return true;
+    return false;
+  }
+
+  looksLikeBackgroundLayer(layer) {
+    if (!layer || typeof layer !== 'object') return false;
+    const hasClip = Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+    if (hasClip) return false;
+    const paints = Array.isArray(layer.paints) ? layer.paints : [];
+    if (!paints.length) return false;
+    const hasImage = paints.some((p) => p && p.kind === 'image');
+    return !hasImage;
+  }
+
+  ensureBackgroundIsBottom() {
+    if (!Array.isArray(this.layers) || this.layers.length === 0) return -1;
+
+    // Preferred: keep explicit background flag.
+    const flaggedIdx = this.layers.findIndex((l) => l && l.isBackground === true);
+    if (flaggedIdx > 0) {
+      const [bg] = this.layers.splice(flaggedIdx, 1);
+      this.layers.unshift(bg);
+      return 0;
+    }
+    if (flaggedIdx === 0) return 0;
+
+    // Legacy: if bottom-most layer looks like a background, flag it.
+    const bottom = this.layers[0];
+    if (this.looksLikeBackgroundLayer(bottom)) {
+      bottom.isBackground = true;
+      return 0;
+    }
+    return -1;
+  }
+
     reorderLayersByView(fromViewIndex, toViewIndex) {
       const fromV = Number.isFinite(fromViewIndex) ? Math.trunc(fromViewIndex) : -1;
       const toVRaw = Number.isFinite(toViewIndex) ? Math.trunc(toViewIndex) : -1;
       if (fromV < 0) return false;
 
+	  // Keep background pinned at model index 0.
+	  // (If it was flagged but got out of place somehow, normalize first.)
+	  this.ensureBackgroundIsBottom();
+
       const view = this.layers.slice().reverse();
       if (fromV >= view.length) return false;
+
+    // Disallow dragging the background layer.
+    const bgV = view.findIndex((l) => this.isBackgroundLayer(l));
+    if (bgV >= 0 && fromV === bgV) return false;
 
       let toV = toVRaw;
       if (toV < 0) toV = 0;
@@ -432,6 +477,13 @@
       const [moved] = view.splice(fromV, 1);
       const insertAt = toV > fromV ? Math.max(0, toV - 1) : toV;
       view.splice(insertAt, 0, moved);
+
+    // Ensure background stays the bottom-most in the view.
+    const bgV2 = view.findIndex((l) => this.isBackgroundLayer(l));
+    if (bgV2 >= 0 && bgV2 !== view.length - 1) {
+      const [bg] = view.splice(bgV2, 1);
+      view.push(bg);
+    }
 
       this.layers = view.reverse();
       // Layer indices shift; cancel scheduled index-based work.
@@ -1606,6 +1658,7 @@
 	  this.colorBarSteps = 16;
 	  this.colorBarColors = { primary: [], complement: [], supportA: [], supportB: [] };
 	  this.colorBarSelectedIndex = { primary: -1, complement: -1, supportA: -1, supportB: -1 };
+    this.lastLayersPointerType = '';
     }
 
     init() {
@@ -1714,6 +1767,19 @@
         });
       }
 
+    // iPad/Pencil: allow multi-select in layers list without Shift.
+    if (this.layersRoot instanceof HTMLElement && this.layersRoot.dataset.boundPointerType !== '1') {
+      this.layersRoot.dataset.boundPointerType = '1';
+      this.layersRoot.addEventListener(
+        'pointerdown',
+        (evt) => {
+          const pt = evt && typeof evt.pointerType === 'string' ? evt.pointerType : '';
+          this.lastLayersPointerType = pt;
+        },
+        { passive: true }
+      );
+    }
+
       const initial = this.patterns && this.patterns[0] ? this.patterns[0].file : null;
       this.select.value = initial || '';
       this.applySelection(initial || '');
@@ -1803,6 +1869,14 @@
         }
 
         if (this.activeLayerIndex >= 0 && this.activeLayerIndex < layers.length) {
+          const layer = layers[this.activeLayerIndex];
+          const paints = layer && Array.isArray(layer.paints) ? layer.paints : [];
+          const isImageLayer = paints.some((p) => p && p.kind === 'image' && p.blob instanceof Blob);
+          if (isImageLayer) {
+            this.applyPatternToBackground();
+            this.renderLayersList();
+            return;
+          }
           this.canvasLayers.addPatternPaintToLayerIndex(
             this.activeLayerIndex,
             this.currentFile,
@@ -3414,6 +3488,25 @@
       const stem = this.sanitizeFileStem(concept) || 'ontwerpstudio-2026';
       const fileName = `${stem}.png`;
 
+    const downloadBlob = (blob, name) => {
+      if (!(blob instanceof Blob)) return;
+      const safeName = typeof name === 'string' && name.trim() ? name.trim() : 'ontwerpstudio-2026.png';
+      try {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = safeName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch (_) {}
+        }, 0);
+      } catch (_) {}
+    };
+
       const saveBlob = (blob) => {
         if (!(blob instanceof Blob)) return;
         const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -3429,18 +3522,47 @@
           blob,
         };
 
-        // Persist and refresh the Images view (no auto-PDF generation).
-        this.savedImagesDB.put(record).catch(() => {});
-        if (this.rightView === 'images') this.renderSavedImages();
-
-        // After saving a cropped export, remove the crop grid.
-        if (usedCropRect) clearCropSelection();
+      // Persist and refresh the Images view (no auto-PDF generation).
+      this.savedImagesDB
+        .put(record)
+        .then(() => {
+          if (this.rightView === 'images') this.renderSavedImages();
+          // After saving a cropped export, remove the crop grid.
+          if (usedCropRect) clearCropSelection();
+        })
+        .catch(() => {
+          // Common on iPad: quota exceeded / IndexedDB blocked.
+          // Fall back to downloading the PNG so the user can still save.
+          try {
+            this.savedImagesDB.dbPromise = null;
+          } catch (_) {}
+          downloadBlob(blob, fileName);
+          if (usedCropRect) clearCropSelection();
+        });
       };
 
       if (typeof out.toBlob === 'function') {
         out.toBlob((blob) => {
-          if (!(blob instanceof Blob)) return;
-          saveBlob(blob);
+      if (blob instanceof Blob) {
+        saveBlob(blob);
+        return;
+      }
+
+      // iOS/Safari can occasionally return null; fall back to a dataURL conversion.
+      try {
+        const dataUrl = out.toDataURL('image/png');
+        fetch(dataUrl)
+          .then((res) => res.blob())
+          .then((b) => {
+            if (b instanceof Blob) saveBlob(b);
+            else if (usedCropRect) clearCropSelection();
+          })
+          .catch(() => {
+            if (usedCropRect) clearCropSelection();
+          });
+      } catch (_) {
+        if (usedCropRect) clearCropSelection();
+      }
         }, 'image/png');
         return;
       }
@@ -3857,6 +3979,13 @@
 
       if (this.activeLayerIndex >= 0 && this.activeLayerIndex < layers.length) {
         const layer = layers[this.activeLayerIndex];
+        const paints = layer && Array.isArray(layer.paints) ? layer.paints : [];
+        const isImageLayer = paints.some((p) => p && p.kind === 'image' && p.blob instanceof Blob);
+        if (isImageLayer) {
+          this.applySolidToBackground();
+          this.renderLayersList();
+          return;
+        }
         const hasClip = layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
 
         if (hasClip) {
@@ -3894,21 +4023,44 @@
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     if (layers.length === 0) return -1;
 
+    const flagged = layers.findIndex((l) => l && l.isBackground === true);
+    if (flagged >= 0) return flagged;
+
     const layer = layers[0];
+    if (this.canvasLayers && typeof this.canvasLayers.looksLikeBackgroundLayer === 'function') {
+      return this.canvasLayers.looksLikeBackgroundLayer(layer) ? 0 : -1;
+    }
+
     const hasClip = layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
-    return hasClip ? -1 : 0;
+    if (hasClip) return -1;
+    const paints = layer && Array.isArray(layer.paints) ? layer.paints : [];
+    const hasImage = paints.some((p) => p && p.kind === 'image' && p.blob instanceof Blob);
+    return hasImage ? -1 : 0;
   }
 
   ensureBackgroundLayerExistsAsSolid(color) {
     const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
     if (!this.canvasLayers || !Array.isArray(this.canvasLayers.layers)) return;
 
+    // We insert a new layer at model index 0; shift indices so selection stays on the same logical layer.
+    const prevActive = Number.isFinite(this.activeLayerIndex) ? Math.trunc(this.activeLayerIndex) : -1;
+    const prevSelected = this.selectedLayerIndices instanceof Set ? new Set(this.selectedLayerIndices) : new Set();
+
     this.canvasLayers.layers.unshift({
+	  isBackground: true,
       clipPathN: null,
       clipKey: null,
       paints: [{ kind: 'solid', file: null, color: c }],
       visibleColors: [c],
     });
+
+    if (prevSelected.size) {
+      this.selectedLayerIndices = new Set(Array.from(prevSelected).map((i) => (Number.isFinite(i) ? Math.trunc(i) + 1 : -1)).filter((i) => i >= 0));
+    }
+    if (prevActive >= 0) {
+      this.setActiveLayerIndex(prevActive + 1);
+      this.syncActiveShapeToLayerIndex(prevActive + 1);
+    }
 
     if (typeof this.canvasLayers.cancelAllVisibleColorsSchedules === 'function') {
       this.canvasLayers.cancelAllVisibleColorsSchedules();
@@ -3922,11 +4074,24 @@
     const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
     if (!this.canvasLayers || !Array.isArray(this.canvasLayers.layers)) return;
 
+    // We insert a new layer at model index 0; shift indices so selection stays on the same logical layer.
+    const prevActive = Number.isFinite(this.activeLayerIndex) ? Math.trunc(this.activeLayerIndex) : -1;
+    const prevSelected = this.selectedLayerIndices instanceof Set ? new Set(this.selectedLayerIndices) : new Set();
+
     this.canvasLayers.layers.unshift({
+	  isBackground: true,
       clipPathN: null,
       clipKey: null,
       paints: [{ file: f, repeatCount, color: c, thickness, tileScaleMode: 'canvas' }],
     });
+
+    if (prevSelected.size) {
+      this.selectedLayerIndices = new Set(Array.from(prevSelected).map((i) => (Number.isFinite(i) ? Math.trunc(i) + 1 : -1)).filter((i) => i >= 0));
+    }
+    if (prevActive >= 0) {
+      this.setActiveLayerIndex(prevActive + 1);
+      this.syncActiveShapeToLayerIndex(prevActive + 1);
+    }
 
     if (typeof this.canvasLayers.cancelAllVisibleColorsSchedules === 'function') {
       this.canvasLayers.cancelAllVisibleColorsSchedules();
@@ -3938,6 +4103,8 @@
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     const bgIdx = this.getBackgroundLayerIndex();
     if (bgIdx >= 0) {
+	  const layer = layers[bgIdx];
+	  if (layer && typeof layer === 'object') layer.isBackground = true;
       this.canvasLayers.addSolidPaintToLayerIndex(bgIdx, this.currentColor);
       return;
     }
@@ -3954,6 +4121,8 @@
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     const bgIdx = this.getBackgroundLayerIndex();
     if (bgIdx >= 0) {
+	  const layer = layers[bgIdx];
+	  if (layer && typeof layer === 'object') layer.isBackground = true;
       this.canvasLayers.addPatternPaintToLayerIndex(
         bgIdx,
         f,
@@ -3980,17 +4149,19 @@
 
       this.layersRoot.innerHTML = '';
       const selectedSet = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
+  		const isPenTouch = this.lastLayersPointerType === 'pen' || this.lastLayersPointerType === 'touch';
 
       // Newest layer first (top of list).
       for (let viewIndex = 0; viewIndex < layers.length; viewIndex++) {
         const i = layers.length - 1 - viewIndex; // model index
         const layer = layers[i] || {};
+		const isBg = layer && layer.isBackground === true;
 
         const item = document.createElement('div');
         const isPrimary = i === this.activeLayerIndex;
         const isSelected = selectedSet.has(i) || isPrimary;
         item.className = 'layers__item' + (isSelected ? ' is-selected' : '') + (isPrimary ? ' is-primary' : '');
-        item.draggable = true;
+    		item.draggable = !isBg;
         item.dataset.viewIndex = String(viewIndex);
 
         const left = document.createElement('span');
@@ -4004,10 +4175,11 @@
         radio.addEventListener('click', (evt) => {
           evt.preventDefault();
           evt.stopPropagation();
-          this.setInteractionMode('select');
-          if (evt.shiftKey) this.toggleLayerSelection(i);
-          else this.setLayerSelectionSingle(i);
-          this.renderLayersList();
+			this.setInteractionMode('select');
+			if (isPenTouch) this.toggleLayerSelection(i);
+			else if (evt.shiftKey) this.toggleLayerSelection(i);
+			else this.setLayerSelectionSingle(i);
+			this.renderLayersList();
         });
 
         const num = document.createElement('span');
@@ -4022,8 +4194,9 @@
           const target = evt.target instanceof HTMLElement ? evt.target : null;
           if (target && (target.closest('button') || target.closest('input') || target.closest('select'))) return;
           this.setInteractionMode('select');
-          if (evt.shiftKey) this.toggleLayerSelection(i);
-          else this.setLayerSelectionSingle(i);
+			if (isPenTouch) this.toggleLayerSelection(i);
+			else if (evt.shiftKey) this.toggleLayerSelection(i);
+			else this.setLayerSelectionSingle(i);
           this.renderLayersList();
         });
 
@@ -4281,6 +4454,7 @@
           yN = Math.max(0, Math.min(1 - hN, yN));
 
           const idx = this.canvasLayers.addImageLayer(id, rec.blob, xN, yN, wN, hN);
+          this.setInteractionMode('select');
           this.setLayerSelectionSingle(idx);
           this.renderLayersList();
         })
@@ -4701,6 +4875,11 @@
       // On touch/pen, `button` can differ across browsers; only gate on mouse.
       if (evt.pointerType === 'mouse' && evt.button !== 0) return;
 
+    // iPad/Safari: prevent default element-selection / tap highlight behavior.
+    if (evt.pointerType === 'pen' || evt.pointerType === 'touch') {
+      evt.preventDefault();
+    }
+
       const p = getPos(evt);
 
       const interactionMode = this.interactionMode === 'select' ? 'select' : 'draw';
@@ -4744,7 +4923,12 @@
             return;
           }
 
-          this.setLayerSelectionSingle(clipIdx);
+		  // iPad pen workflow: tapping multiple shapes adds them to selection.
+		  if (evt.pointerType === 'pen') {
+			  this.toggleLayerSelection(clipIdx);
+		  } else {
+			  this.setLayerSelectionSingle(clipIdx);
+		  }
           this.renderLayersList();
           drawOverlayPath();
 

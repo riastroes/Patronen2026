@@ -513,12 +513,14 @@ body.right-collapsed #rightPanel {
 
 .layers__actions {
   display: flex;
+	flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 10px;
 }
 
 .layers__action {
-  flex: 1 1 0;
+	flex: 1 1 140px;
+	min-width: 0;
   border: 1px solid var(--border);
   background: white;
   padding: 8px 10px;

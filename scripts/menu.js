@@ -2779,6 +2779,223 @@
       this.layerThumbObjectUrls = [];
     }
 
+    updateSavedImagesSelectionUI() {
+      if (!(this.savedImagesRoot instanceof HTMLElement)) return;
+      const selectedId = typeof this.selectedSavedImageId === 'string' ? this.selectedSavedImageId : '';
+      const items = this.savedImagesRoot.querySelectorAll('.saved-images__item');
+      for (const el of items) {
+        if (!(el instanceof HTMLElement)) continue;
+        const id = el.dataset && typeof el.dataset.imageId === 'string' ? el.dataset.imageId : '';
+        if (selectedId && id && String(id) === String(selectedId)) el.classList.add('is-selected');
+        else el.classList.remove('is-selected');
+      }
+    }
+
+    startSavedItemPointerDrag(evt, btn, kind, id) {
+      if (!evt || !(btn instanceof HTMLElement)) return false;
+      if (evt.pointerType === 'mouse') return false;
+	  if (evt.pointerType !== 'pen') return false;
+
+	  // On iPad/Safari a pointer sequence also fires a click; we handle tap/drag ourselves.
+	  if (btn && btn.dataset) btn.dataset.skipClick = '1';
+
+      const pointerId = evt.pointerId;
+      const startX = evt.clientX;
+      const startY = evt.clientY;
+      const threshold = 6;
+      let moved = false;
+      let ghost = null;
+
+      const cleanup = () => {
+        try {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', onUp);
+        } catch (_) {}
+        if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+        ghost = null;
+      };
+
+      const ensureGhost = () => {
+        if (ghost) return ghost;
+        ghost = document.createElement('div');
+        ghost.setAttribute('aria-hidden', 'true');
+        ghost.style.position = 'fixed';
+        ghost.style.left = '0px';
+        ghost.style.top = '0px';
+        ghost.style.width = '72px';
+        ghost.style.height = '72px';
+        ghost.style.transform = 'translate(-50%, -50%)';
+        ghost.style.pointerEvents = 'none';
+        ghost.style.opacity = '0.85';
+        ghost.style.border = '1px solid var(--border)';
+        ghost.style.borderRadius = '10px';
+        ghost.style.backgroundColor = 'white';
+        ghost.style.backgroundRepeat = 'no-repeat';
+        ghost.style.backgroundPosition = 'center';
+        ghost.style.backgroundSize = 'cover';
+        ghost.style.zIndex = '999999';
+        const bg = btn.style && btn.style.backgroundImage ? btn.style.backgroundImage : '';
+        if (bg) ghost.style.backgroundImage = bg;
+        document.body.appendChild(ghost);
+        return ghost;
+      };
+
+      const moveGhost = (x, y) => {
+        if (!ghost) return;
+        ghost.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -50%)`;
+      };
+
+      const onMove = (e) => {
+        if (!e || e.pointerId !== pointerId) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        if (!moved) {
+          if (Math.hypot(dx, dy) < threshold) return;
+          moved = true;
+          ensureGhost();
+        }
+        moveGhost(e.clientX, e.clientY);
+        if (e.pointerType === 'pen' || e.pointerType === 'touch') e.preventDefault();
+      };
+
+      const onUp = (e) => {
+        if (!e || e.pointerId !== pointerId) return;
+        const endX = e.clientX;
+        const endY = e.clientY;
+        cleanup();
+
+        if (moved) {
+          const overlay = this.drawOverlay;
+          if (overlay instanceof HTMLCanvasElement) {
+            const r = overlay.getBoundingClientRect();
+            const inside = endX >= r.left && endX <= r.right && endY >= r.top && endY <= r.bottom;
+            if (inside) {
+              if (kind === 'image') this.placeSavedImageAtClientPoint(String(id), endX, endY);
+              else if (kind === 'shape') this.placeSavedShapeAtClientPoint(String(id), endX, endY);
+            }
+          }
+          if (e.pointerType === 'pen' || e.pointerType === 'touch') e.preventDefault();
+          return;
+        }
+
+        // Tap behavior (no drag)
+        if (kind === 'image') {
+          this.selectedSavedImageId = String(id);
+          this.updateSavedImagesToolbarState();
+          this.updateSavedImagesSelectionUI();
+        } else if (kind === 'shape') {
+          const shapeId = String(id);
+          const wasSelected = shapeId === String(this.selectedSavedShapeId);
+          this.selectedSavedShapeId = shapeId;
+          if (!wasSelected) {
+            this.renderSavedShapes();
+            return;
+          }
+          this.placeSavedShapeAtCanvasN(shapeId, 0.5, 0.5);
+        }
+        if (e.pointerType === 'pen' || e.pointerType === 'touch') e.preventDefault();
+      };
+
+      try {
+        if (typeof btn.setPointerCapture === 'function') btn.setPointerCapture(pointerId);
+      } catch (_) {}
+
+      window.addEventListener('pointermove', onMove, { passive: false });
+      window.addEventListener('pointerup', onUp, { passive: false });
+      window.addEventListener('pointercancel', onUp, { passive: false });
+      if (evt.pointerType === 'pen' || evt.pointerType === 'touch') evt.preventDefault();
+      return true;
+    }
+
+    placeSavedImageAtClientPoint(id, clientX, clientY) {
+      const overlay = this.drawOverlay;
+      if (!(overlay instanceof HTMLCanvasElement)) return;
+      const rect = overlay.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+      this.savedImagesDB
+        .get(String(id))
+        .then((rec) => {
+          if (!rec || !(rec.blob instanceof Blob)) return;
+
+          const base = 0.28;
+          const iw = Number(rec.w) || 0;
+          const ih = Number(rec.h) || 0;
+          const ratio = iw > 0 && ih > 0 ? ih / iw : 1;
+
+          let wN = base;
+          let hN = base;
+          if (ratio > 0.0001) {
+            if (ratio >= 1) {
+              hN = base;
+              wN = Math.max(0.03, base / ratio);
+            } else {
+              wN = base;
+              hN = Math.max(0.03, base * ratio);
+            }
+          }
+
+          let xN = clamp01(x / w - wN / 2);
+          let yN = clamp01(y / h - hN / 2);
+          xN = Math.max(0, Math.min(1 - wN, xN));
+          yN = Math.max(0, Math.min(1 - hN, yN));
+
+          const idx = this.canvasLayers.addImageLayer(String(id), rec.blob, xN, yN, wN, hN);
+          this.setInteractionMode('select');
+          this.setLayerSelectionSingle(idx);
+          this.renderLayersList();
+          if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+        })
+        .catch(() => {});
+    }
+
+    placeSavedShapeAtClientPoint(id, clientX, clientY) {
+      const overlay = this.drawOverlay;
+      if (!(overlay instanceof HTMLCanvasElement)) return;
+      const rect = overlay.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      const cxN = Math.max(0, Math.min(1, x / w));
+      const cyN = Math.max(0, Math.min(1, y / h));
+      this.placeSavedShapeAtCanvasN(String(id), cxN, cyN);
+    }
+
+    placeSavedShapeAtCanvasN(id, cxN, cyN) {
+      this.savedShapesDB
+        .get(String(id))
+        .then((rec) => {
+          if (!rec) return;
+          if (Array.isArray(rec.clipPathsN) && rec.clipPathsN.length) {
+            const nextGroup = this.placeClipPathsNAt(rec.clipPathsN, cxN, cyN) || rec.clipPathsN;
+            this.activeClipPathsN = nextGroup;
+            this.activeClipPathN = null;
+            this.activeClipKey = typeof rec.clipKey === 'string' && rec.clipKey ? rec.clipKey : '';
+            this.setInteractionMode('select');
+            this.applyToActiveShapeGroup();
+          } else {
+            if (!Array.isArray(rec.clipPathN) || rec.clipPathN.length < 3) return;
+            const next = this.placeClipPathNAt(rec.clipPathN, cxN, cyN) || rec.clipPathN;
+            this.activeClipPathN = next;
+            this.activeClipPathsN = null;
+            this.activeClipKey = typeof rec.clipKey === 'string' && rec.clipKey ? rec.clipKey : this.makeClipKey(next);
+            this.setInteractionMode('select');
+            this.applyToActiveShape();
+          }
+
+          if (this.rightView === 'shapes') this.renderSavedShapes();
+          if (typeof this.renderDrawOverlay === 'function') this.renderDrawOverlay();
+          this.renderLayersList();
+        })
+        .catch(() => {});
+    }
+
     renderSavedImages() {
       if (!(this.savedImagesRoot instanceof HTMLElement)) return;
 
@@ -2826,9 +3043,17 @@
         evt.dataTransfer.setData('application/x-ontwerpstudio2026-image', String(it.id));
 				evt.dataTransfer.setData('text/plain', String(it.id));
 			});
+			btn.addEventListener('pointerdown', (evt) => {
+				this.startSavedItemPointerDrag(evt, btn, 'image', String(it.id));
+			});
             btn.addEventListener('click', () => {
+				if (btn.dataset && btn.dataset.skipClick === '1') {
+					btn.dataset.skipClick = '0';
+					return;
+				}
               this.selectedSavedImageId = String(it.id);
-              this.renderSavedImages();
+              this.updateSavedImagesToolbarState();
+              this.updateSavedImagesSelectionUI();
             });
 
             if (it && it.favorite) {
@@ -2842,6 +3067,8 @@
             cell.appendChild(btn);
             this.savedImagesRoot.appendChild(cell);
           }
+
+			this.updateSavedImagesSelectionUI();
         })
         .catch(() => {
           this.savedImagesRoot.textContent = 'Kan opgeslagen afbeeldingen niet laden.';
@@ -3179,7 +3406,14 @@
               evt.dataTransfer.setData('application/x-ontwerpstudio2026-shape', String(it.id));
               evt.dataTransfer.setData('text/plain', String(it.id));
             });
+			btn.addEventListener('pointerdown', (evt) => {
+				this.startSavedItemPointerDrag(evt, btn, 'shape', String(it.id));
+			});
             btn.addEventListener('click', () => {
+				if (btn.dataset && btn.dataset.skipClick === '1') {
+					btn.dataset.skipClick = '0';
+					return;
+				}
               const id = String(it.id);
               const wasSelected = id === String(this.selectedSavedShapeId);
               this.selectedSavedShapeId = id;

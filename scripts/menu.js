@@ -88,6 +88,301 @@
     return document.getElementById(id);
   }
 
+  function normalizeCssColorString(color) {
+    const tmp = document.createElement('div');
+    tmp.style.color = typeof color === 'string' ? color : '';
+    document.body.appendChild(tmp);
+    const out = getComputedStyle(tmp).color;
+    document.body.removeChild(tmp);
+    return out;
+  }
+
+  function parseCssRgbString(color) {
+    const s = typeof color === 'string' ? color.trim() : '';
+    if (!s) return null;
+    const m = s.match(/rgba?\(([^)]+)\)/i);
+    if (!m) return null;
+    const parts = m[1].split(',').map((p) => p.trim());
+    if (parts.length < 3) return null;
+    const r = Number(parts[0]);
+    const g = Number(parts[1]);
+    const b = Number(parts[2]);
+    if (![r, g, b].every((v) => Number.isFinite(v))) return null;
+    return {
+      r: Math.max(0, Math.min(255, Math.round(r))),
+      g: Math.max(0, Math.min(255, Math.round(g))),
+      b: Math.max(0, Math.min(255, Math.round(b))),
+    };
+  }
+
+  function rgbaCssFromRgb(rgb, alpha) {
+    const a = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+    const r = rgb && Number.isFinite(rgb.r) ? Math.max(0, Math.min(255, Math.round(rgb.r))) : 0;
+    const g = rgb && Number.isFinite(rgb.g) ? Math.max(0, Math.min(255, Math.round(rgb.g))) : 0;
+    const b = rgb && Number.isFinite(rgb.b) ? Math.max(0, Math.min(255, Math.round(rgb.b))) : 0;
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
+  function mixRgb(a, b, t) {
+    const tt = Number.isFinite(t) ? Math.max(0, Math.min(1, t)) : 0;
+    const ar = a && Number.isFinite(a.r) ? a.r : 0;
+    const ag = a && Number.isFinite(a.g) ? a.g : 0;
+    const ab = a && Number.isFinite(a.b) ? a.b : 0;
+    const br = b && Number.isFinite(b.r) ? b.r : 0;
+    const bg = b && Number.isFinite(b.g) ? b.g : 0;
+    const bb = b && Number.isFinite(b.b) ? b.b : 0;
+    return {
+      r: ar + (br - ar) * tt,
+      g: ag + (bg - ag) * tt,
+      b: ab + (bb - ab) * tt,
+    };
+  }
+
+  function tintRgb(rgb, tone) {
+    const t = Number.isFinite(tone) ? Math.max(-1, Math.min(1, tone)) : 0;
+    if (t === 0) return rgb;
+    if (t > 0) return mixRgb(rgb, { r: 255, g: 255, b: 255 }, t);
+    return mixRgb(rgb, { r: 0, g: 0, b: 0 }, -t);
+  }
+
+  function hashStringToSeed(str) {
+    const s = typeof str === 'string' ? str : '';
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function makeRng(seed) {
+    let x = Number.isFinite(seed) ? (seed >>> 0) : 1;
+    return () => {
+      // LCG (Numerical Recipes)
+      x = (Math.imul(1664525, x) + 1013904223) >>> 0;
+      return x / 4294967296;
+    };
+  }
+
+  function generateTextureDataUrl(textureId, colorOrPalette, size) {
+    const id = typeof textureId === 'string' ? textureId.trim() : '';
+    const w = Math.max(32, Math.min(512, Math.round(Number.isFinite(size) ? size : 256)));
+    const h = w;
+
+    const baseCss = typeof colorOrPalette === 'string' && colorOrPalette.trim() ? colorOrPalette.trim() : '#000000';
+    const rawPalette = Array.isArray(colorOrPalette)
+      ? colorOrPalette.filter((c) => typeof c === 'string' && c.trim()).slice(0, 4)
+      : [baseCss];
+
+    const paletteCss = rawPalette.length ? rawPalette.slice() : [baseCss];
+    while (paletteCss.length < 4) paletteCss.push(paletteCss[paletteCss.length - 1] || baseCss);
+
+    const paletteNorm = paletteCss.map((c) => normalizeCssColorString(c));
+    const paletteRgb = paletteNorm.map((c) => parseCssRgbString(c) || { r: 0, g: 0, b: 0 });
+
+    const pickBaseRgb = (rnd) => {
+      const t = rnd();
+      if (t < 0.8) return paletteRgb[0];
+      if (t < 0.9) return paletteRgb[1];
+      if (t < 0.95) return paletteRgb[2];
+      return paletteRgb[3];
+    };
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+
+    const seed = hashStringToSeed(`${id}|${paletteNorm.join('|')}|${w}`);
+    const rnd = makeRng(seed);
+
+    // Base wash.
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = rgbaCssFromRgb(paletteRgb[0], 0.14);
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = rgbaCssFromRgb(paletteRgb[1], 0.04);
+    ctx.fillRect(0, 0, w, h);
+
+    const strokeFrom = (baseRgb, a, tone) => rgbaCssFromRgb(tintRgb(baseRgb, tone), a);
+
+    const drawDots = (count, rMin, rMax, aMin, aMax) => {
+      for (let i = 0; i < count; i++) {
+        const x = rnd() * w;
+        const y = rnd() * h;
+        const r = rMin + (rMax - rMin) * rnd();
+        const a = aMin + (aMax - aMin) * rnd();
+        const tone = (rnd() - 0.5) * 1.0;
+        const base = pickBaseRgb(rnd);
+        ctx.fillStyle = strokeFrom(base, a, tone);
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+
+    const drawLines = (step, angleRad, lineWidth, alpha) => {
+      const base = pickBaseRgb(rnd);
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+      ctx.rotate(angleRad);
+      ctx.translate(-w / 2, -h / 2);
+      ctx.strokeStyle = strokeFrom(base, alpha, -0.55);
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      for (let x = -h; x <= w + h; x += step) {
+        ctx.moveTo(x, -h);
+        ctx.lineTo(x, h + h);
+      }
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    const drawWaves = (rows, amp, alpha, lineWidth) => {
+      ctx.lineWidth = lineWidth;
+      for (let r = 0; r < rows; r++) {
+        const base = pickBaseRgb(rnd);
+        ctx.strokeStyle = strokeFrom(base, alpha, -0.50);
+        const y0 = (r + 0.5) * (h / rows);
+        const phase = rnd() * Math.PI * 2;
+        ctx.beginPath();
+        for (let x = 0; x <= w; x += 4) {
+          const t = (x / w) * Math.PI * 2;
+          const y = y0 + Math.sin(t + phase) * amp;
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+    };
+
+    const drawFibers = (count, alpha) => {
+      ctx.lineWidth = 1;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < count; i++) {
+        const base = pickBaseRgb(rnd);
+        ctx.strokeStyle = strokeFrom(base, alpha, -0.55);
+        const x0 = rnd() * w;
+        const y0 = rnd() * h;
+        const x1 = x0 + (rnd() - 0.5) * w * 0.4;
+        const y1 = y0 + (rnd() - 0.5) * h * 0.4;
+        const cx = (x0 + x1) / 2 + (rnd() - 0.5) * w * 0.2;
+        const cy = (y0 + y1) / 2 + (rnd() - 0.5) * h * 0.2;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.quadraticCurveTo(cx, cy, x1, y1);
+        ctx.stroke();
+      }
+    };
+
+    switch (id) {
+      case 'grain': {
+        drawDots(Math.round(w * h * 0.015), 0.3, 1.2, 0.10, 0.22);
+        break;
+      }
+      case 'speckle': {
+        drawDots(Math.round(w * h * 0.0035), 0.8, 2.8, 0.14, 0.30);
+        drawDots(Math.round(w * h * 0.0010), 2.5, 5.5, 0.10, 0.22);
+        break;
+      }
+      case 'dots': {
+        const step = Math.max(10, Math.round(w / 14));
+        for (let y = 0; y <= h; y += step) {
+          for (let x = 0; x <= w; x += step) {
+            const jx = (rnd() - 0.5) * step * 0.25;
+            const jy = (rnd() - 0.5) * step * 0.25;
+            const tone = (rnd() - 0.5) * 1.0;
+            const base = pickBaseRgb(rnd);
+            ctx.fillStyle = strokeFrom(base, 0.34, tone);
+            ctx.beginPath();
+            ctx.arc(x + jx, y + jy, Math.max(1, step * 0.10), 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        break;
+      }
+      case 'lines': {
+        drawLines(Math.max(12, Math.round(w / 12)), 0, 2, 0.18);
+        drawLines(Math.max(12, Math.round(w / 12)), Math.PI / 2, 1, 0.14);
+        break;
+      }
+      case 'crosshatch': {
+        drawLines(Math.max(12, Math.round(w / 12)), Math.PI / 4, 1, 0.16);
+        drawLines(Math.max(12, Math.round(w / 12)), -Math.PI / 4, 1, 0.16);
+        break;
+      }
+      case 'waves': {
+        drawWaves(10, Math.max(4, Math.round(w * 0.02)), 0.18, 2);
+        break;
+      }
+      case 'checker': {
+        const cell = Math.max(10, Math.round(w / 8));
+        for (let y = 0; y < h; y += cell) {
+          for (let x = 0; x < w; x += cell) {
+            const on = ((x / cell) | 0) % 2 === ((y / cell) | 0) % 2;
+            const base = on ? paletteRgb[1] : paletteRgb[0];
+            const tone = on ? -0.60 : 0.35;
+            const a = on ? 0.30 : 0.22;
+            ctx.fillStyle = strokeFrom(base, a, tone);
+            ctx.fillRect(x, y, cell, cell);
+          }
+        }
+        break;
+      }
+      case 'fibers': {
+        drawFibers(Math.round(w * 0.45), 0.18);
+        drawDots(Math.round(w * h * 0.0012), 0.5, 1.6, 0.10, 0.18);
+        break;
+      }
+      case 'cloud': {
+        // Soft blotches.
+        for (let i = 0; i < 120; i++) {
+          const x = rnd() * w;
+          const y = rnd() * h;
+          const r = (0.04 + 0.10 * rnd()) * w;
+          const a = 0.03 + 0.08 * rnd();
+          const tone = (rnd() - 0.5) * 1.0;
+          const base = pickBaseRgb(rnd);
+          ctx.fillStyle = strokeFrom(base, a + 0.04, tone);
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        break;
+      }
+      case 'scratches': {
+        ctx.lineWidth = 1;
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 180; i++) {
+          const base = pickBaseRgb(rnd);
+          ctx.strokeStyle = strokeFrom(base, 0.28, -0.70);
+          const x0 = rnd() * w;
+          const y0 = rnd() * h;
+          const len = (0.05 + 0.20 * rnd()) * w;
+          const ang = rnd() * Math.PI * 2;
+          const x1 = x0 + Math.cos(ang) * len;
+          const y1 = y0 + Math.sin(ang) * len;
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+        }
+        break;
+      }
+      default: {
+        // Fallback: light grain.
+        drawDots(Math.round(w * h * 0.010), 0.4, 1.5, 0.10, 0.22);
+        break;
+      }
+    }
+
+    try {
+      return canvas.toDataURL('image/png');
+    } catch (_) {
+      return '';
+    }
+  }
+
   class MenuController {
     constructor(options) {
       this.toggle = qs('menuToggle');
@@ -362,6 +657,7 @@
       this.imageCache = new Map();
 	  this.svgTextCache = new Map();
 	  this.variantCache = new Map();
+	  this.textureCache = new Map();
 	  this.savedImageCache = new Map();
       this.drawQueue = Promise.resolve();
 
@@ -1031,6 +1327,33 @@
     return promise;
   }
 
+  loadGeneratedTextureImage(textureId, color, paletteCss) {
+    const id = typeof textureId === 'string' ? textureId.trim() : '';
+    const safeColor = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+
+    const palette = Array.isArray(paletteCss) && paletteCss.length
+      ? paletteCss.filter((c) => typeof c === 'string' && c.trim()).slice(0, 4)
+      : [safeColor, safeColor, safeColor, safeColor];
+    while (palette.length < 4) palette.push(palette[palette.length - 1] || safeColor);
+    const paletteKey = palette.map((c) => normalizeCssColorString(c)).join('|');
+    const key = `${id}|${paletteKey}`;
+
+    const cached = this.textureCache.get(key);
+    if (cached && cached.img && cached.img.complete) return Promise.resolve(cached.img);
+    if (cached && cached.promise) return cached.promise;
+
+    const img = new Image();
+    const promise = new Promise((resolve, reject) => {
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`Failed to load generated texture: ${id}`));
+    });
+
+    this.textureCache.set(key, { img, promise });
+    const dataUrl = generateTextureDataUrl(id, palette, 256);
+    img.src = dataUrl || '';
+    return promise;
+  }
+
   drawLayer(img, repeatCount, clipPathN, tileScaleMode) {
       const c = this.getContext();
       if (!c) return;
@@ -1218,6 +1541,24 @@
               .catch(() => {});
             continue;
           }
+
+          if (kind === 'texture') {
+            const textureId = paint && typeof paint.textureId === 'string' ? paint.textureId : '';
+			const repeatCountRaw = paint ? paint.repeatCount : undefined;
+			const repeatCount = Number.isFinite(repeatCountRaw) ? Math.max(1, Math.min(10, Math.round(repeatCountRaw))) : 10;
+            const color = paint ? paint.color : undefined;
+            const palette = paint && Array.isArray(paint.palette) ? paint.palette : null;
+            const tileScaleMode = paint ? paint.tileScaleMode : undefined;
+            this.drawQueue = this.drawQueue
+              .then(() => this.loadGeneratedTextureImage(textureId, color, palette))
+              .then((img) => {
+                this.resizeToCSSPixels();
+                this.drawLayer(img, repeatCount, clipPathN, tileScaleMode);
+              })
+              .catch(() => {});
+            continue;
+          }
+
           if (kind === 'solid' || !(paint && paint.file)) {
             const color = paint ? paint.color : undefined;
             this.drawQueue = this.drawQueue
@@ -1374,6 +1715,66 @@
       return layerIndex;
     }
 
+    addClippedTextureLayer(textureId, repeatCount, color, clipPathN, tileScaleMode, clipKey, paletteCss) {
+      const id = typeof textureId === 'string' ? textureId.trim() : '';
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+	  const rc = Number.isFinite(repeatCount) ? Math.max(1, Math.min(10, Math.round(repeatCount))) : 10;
+      const safeClipN = Array.isArray(clipPathN) ? clipPathN.slice() : null;
+      const mode = tileScaleMode === 'shape' ? 'shape' : 'canvas';
+      const safeKey = typeof clipKey === 'string' && clipKey ? clipKey : null;
+
+      const palette = Array.isArray(paletteCss) && paletteCss.length
+        ? paletteCss.filter((p) => typeof p === 'string' && p.trim()).slice(0, 4)
+        : [c, c, c, c];
+      while (palette.length < 4) palette.push(palette[palette.length - 1] || c);
+
+      let layerIndex = -1;
+      if (safeKey) layerIndex = this.findLayerIndexByClipKey(safeKey);
+
+      if (layerIndex >= 0) {
+        const layer = this.layers[layerIndex];
+        if (layer) {
+          layer.clipPathN = safeClipN;
+          layer.clipKey = safeKey;
+          if (!Array.isArray(layer.paints)) layer.paints = [];
+		  layer.paints.push({ kind: 'texture', textureId: id, repeatCount: rc, color: c, tileScaleMode: mode, palette });
+          this.addOptimisticVisibleColor(layer, c);
+        }
+      } else {
+        this.layers.push({
+          clipPathN: safeClipN,
+          clipKey: safeKey,
+		  paints: [{ kind: 'texture', textureId: id, repeatCount: rc, color: c, tileScaleMode: mode, palette }],
+        });
+        layerIndex = this.layers.length - 1;
+        const layer = this.layers[layerIndex];
+        this.addOptimisticVisibleColor(layer, c);
+      }
+
+      if (this.layers.length === 1) this.resizeToCSSPixels();
+      const needsFullRedraw = layerIndex >= 0 && layerIndex < this.layers.length - 1;
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+
+        if (needsFullRedraw) {
+          this.redrawAllLayers();
+          return;
+        }
+
+        this.drawQueue = this.drawQueue
+          .then(() => this.loadGeneratedTextureImage(id, c, palette))
+          .then((img) => {
+			this.drawLayer(img, rc, safeClipN, mode);
+          })
+          .catch(() => {});
+      }, 0);
+
+      this.scheduleVisibleColorsCompute(layerIndex);
+      return layerIndex;
+    }
+
     addClippedSolidLayer(color, clipPathN, clipKey) {
       const safeClipN = Array.isArray(clipPathN) ? clipPathN.slice() : null;
       const safeKey = typeof clipKey === 'string' && clipKey ? clipKey : null;
@@ -1523,6 +1924,51 @@
       return true;
     }
 
+    addTexturePaintToLayerIndex(layerIndex, textureId, repeatCount, color, tileScaleMode, paletteCss) {
+      const idx = Number.isFinite(layerIndex) ? Math.trunc(layerIndex) : -1;
+      const layer = this.layers && this.layers[idx];
+      if (!layer) return false;
+
+      const id = typeof textureId === 'string' ? textureId.trim() : '';
+      if (!id) return false;
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+	  const rc = Number.isFinite(repeatCount) ? Math.max(1, Math.min(10, Math.round(repeatCount))) : 10;
+      const mode = tileScaleMode === 'shape' ? 'shape' : 'canvas';
+
+      const palette = Array.isArray(paletteCss) && paletteCss.length
+        ? paletteCss.filter((p) => typeof p === 'string' && p.trim()).slice(0, 4)
+        : [c, c, c, c];
+      while (palette.length < 4) palette.push(palette[palette.length - 1] || c);
+
+      if (!Array.isArray(layer.paints)) layer.paints = [];
+    layer.paints.push({ kind: 'texture', textureId: id, repeatCount: rc, color: c, tileScaleMode: mode, palette });
+
+      const clipPathN = Array.isArray(layer.clipPathN) ? layer.clipPathN : null;
+      if (clipPathN) this.addOptimisticVisibleColor(layer, c);
+      else layer.visibleColors = [c];
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+
+        const needsFullRedraw = idx >= 0 && idx < this.layers.length - 1;
+        if (needsFullRedraw) {
+          this.redrawAllLayers();
+          return;
+        }
+
+        this.drawQueue = this.drawQueue
+          .then(() => this.loadGeneratedTextureImage(id, c, palette))
+          .then((img) => {
+			this.drawLayer(img, rc, clipPathN, mode);
+          })
+          .catch(() => {});
+      }, 0);
+
+      if (clipPathN) this.scheduleVisibleColorsCompute(idx);
+      return true;
+    }
+
     hasLayers() {
       return this.layers.length > 0;
     }
@@ -1538,6 +1984,7 @@
       this.rightViewComposition = qs('rightViewComposition');
       this.compositionGrid = qs('compositionGrid');
       this.rightViewPatterns = qs('rightViewPatterns');
+      this.rightViewTextures = qs('rightViewTextures');
       this.rightViewColors = qs('rightViewColors');
       this.rightViewImages = qs('rightViewImages');
       this.rightViewShapes = qs('rightViewShapes');
@@ -1560,6 +2007,13 @@
     this.favoriteSavedImageBtn = qs('favoriteSavedImageBtn');
       this.repeat = qs('patternRepeat');
       this.repeatValue = qs('patternRepeatValue');
+
+      this.textureSelect = qs('textureSelect');
+      this.texturePreview = qs('texturePreview');
+      this.textureRepeat = qs('textureRepeat');
+      this.textureRepeatValue = qs('textureRepeatValue');
+      this.tileScaleToShapeTextures = qs('tileScaleToShapeTextures');
+
       this.palette = qs('palette');
     this.colorBarPrimary = qs('colorBarPrimary');
     this.colorBarComplement = qs('colorBarComplement');
@@ -1567,6 +2021,7 @@
     this.colorBarSupportB = qs('colorBarSupportB');
     this.colorMixCanvas = qs('colorMixCanvas');
     this.colorMixCanvasPatterns = qs('colorMixCanvasPatterns');
+    this.colorMixCanvasTextures = qs('colorMixCanvasTextures');
     this.colorMixCanvasShapes = qs('colorMixCanvasShapes');
 	  this.thickness = qs('patternThickness');
 	  this.thicknessValue = qs('patternThicknessValue');
@@ -1619,10 +2074,25 @@
       ];
 
       this.currentFile = '';
+      this.textures = [
+        { label: 'Geen', id: '' },
+        { label: '01 Korrel', id: 'grain' },
+        { label: '02 Spikkels', id: 'speckle' },
+        { label: '03 Stippen', id: 'dots' },
+        { label: '04 Lijnen', id: 'lines' },
+        { label: '05 Kruisarcering', id: 'crosshatch' },
+        { label: '06 Golven', id: 'waves' },
+        { label: '07 Blokjes', id: 'checker' },
+        { label: '08 Vezels', id: 'fibers' },
+        { label: '09 Wolkjes', id: 'cloud' },
+        { label: '10 Krasjes', id: 'scratches' },
+      ];
+      this.currentTextureId = '';
     this.currentColor = '#000000';
     this.baseColor = '#000000';
     this.currentThickness = 1;
       this.currentTileScaleMode = 'canvas';
+      this.currentTextureTileScaleMode = 'shape';
       this.canvasLayers = new PatternCanvasLayers(this.canvas);
 
       this.drawOverlay = null;
@@ -1668,6 +2138,7 @@
       this.dragOverItem = null;
 
       this.previewToken = 0;
+      this.texturePreviewToken = 0;
 
       this.pendingGroupParamRaf = 0;
       this.pendingGroupPatternParams = null;
@@ -1696,6 +2167,9 @@
 	  this.initCompositionView();
 
       this.initRepeatControl();
+    this.initTexturesView();
+    this.initTextureRepeatControl();
+    this.initTextureTileScaleToggle();
 	  this.initPaletteControl();
 	  this.initColorMixCanvasControl();
 	  this.initThicknessControl();
@@ -2046,7 +2520,9 @@
               ? 'shapes'
               : view === 'colors'
                 ? 'colors'
-                : 'patterns';
+                : view === 'textures'
+                  ? 'textures'
+                  : 'patterns';
       this.rightView = next;
 
       if (this.rightViewStart instanceof HTMLElement) {
@@ -2061,6 +2537,9 @@
       if (this.rightViewPatterns instanceof HTMLElement) {
         this.rightViewPatterns.hidden = next !== 'patterns';
       }
+	  if (this.rightViewTextures instanceof HTMLElement) {
+		this.rightViewTextures.hidden = next !== 'textures';
+	  }
       if (this.rightViewColors instanceof HTMLElement) {
         this.rightViewColors.hidden = next !== 'colors';
       }
@@ -2081,6 +2560,8 @@
             ? 'Kleuren'
             : next === 'patterns'
               ? 'Patronen'
+              : next === 'textures'
+                ? 'Texturen'
               : next === 'shapes'
                 ? 'Vormen'
                 : next === 'images'
@@ -2094,6 +2575,7 @@
 
       if (next === 'images') this.renderSavedImages();
       if (next === 'shapes') this.renderSavedShapes();
+	  if (next === 'textures') this.applyTextureSelection(this.currentTextureId);
 	  this.renderColorMixCanvas();
       if (next === 'composition') {
         this.renderCompositionThumbs();
@@ -4064,6 +4546,90 @@
     this.renderLayersList();
   }
 
+  applyTextureToActiveShape() {
+    const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
+    if (!hasActive) return;
+
+    const clipKey = this.activeClipKey || this.makeClipKey(this.activeClipPathN);
+    if (!clipKey) return;
+
+    if (!this.currentTextureId) {
+      this.applyToActiveShape();
+      return;
+    }
+
+    const idx = this.canvasLayers.addClippedTextureLayer(
+      this.currentTextureId,
+      this.getTextureRepeatCount(),
+      this.currentColor,
+      this.activeClipPathN,
+      this.currentTextureTileScaleMode,
+      clipKey,
+      this.getCurrentTexturePaletteCss()
+    );
+
+    this.setLayerSelectionSingle(idx);
+    this.renderLayersList();
+
+    const token = ++this.visibleColorsRenderToken;
+    this.canvasLayers.getLatestVisibleColorsPromise(idx)
+      .then(() => {
+        if (token !== this.visibleColorsRenderToken) return;
+        this.renderLayersList();
+      })
+      .catch(() => {});
+  }
+
+  applyTextureToActiveShapeGroup() {
+    const clipPathsN = Array.isArray(this.activeClipPathsN) ? this.activeClipPathsN : null;
+    if (!clipPathsN || clipPathsN.length === 0) return;
+    if (!this.currentTextureId) {
+      this.applyToActiveShapeGroup();
+      return;
+    }
+
+    const cleaned = clipPathsN
+      .map((poly) => {
+        if (!Array.isArray(poly) || poly.length < 3) return null;
+        const out = poly
+          .map((p) => (Array.isArray(p) && p.length >= 2 ? [Number(p[0]), Number(p[1])] : null))
+          .filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+        return out.length >= 3 ? out : null;
+      })
+      .filter(Boolean);
+    if (cleaned.length === 0) return;
+
+    const groupId = `group-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const indices = [];
+
+    for (const poly of cleaned) {
+      const clipKey = this.makeClipKey(poly);
+      if (!clipKey) continue;
+      const idx = this.canvasLayers.addClippedTextureLayer(
+        this.currentTextureId,
+        this.getTextureRepeatCount(),
+        this.currentColor,
+        poly,
+        this.currentTextureTileScaleMode,
+        clipKey,
+        this.getCurrentTexturePaletteCss()
+      );
+      if (Number.isFinite(idx) && idx >= 0) {
+        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+        const layer = layers[idx];
+        if (layer) layer.groupId = groupId;
+        indices.push(idx);
+      }
+    }
+
+    if (indices.length === 0) return;
+    this.selectedLayerIndices = new Set(indices);
+    const activeIdx = indices[0];
+    this.setActiveLayerIndex(activeIdx);
+    this.syncActiveShapeToLayerIndex(activeIdx);
+    this.renderLayersList();
+  }
+
     syncActiveShapeToLayerIndex(layerIndex) {
       const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
       const layer = layers[layerIndex];
@@ -4168,6 +4734,7 @@
       if (!this.pendingGroupPatternParams) this.pendingGroupPatternParams = {};
       if (Number.isFinite(params.repeatCount)) this.pendingGroupPatternParams.repeatCount = Math.trunc(params.repeatCount);
       if (Number.isFinite(params.thickness)) this.pendingGroupPatternParams.thickness = Math.trunc(params.thickness);
+	  this.pendingGroupPatternParams.kindFilter = params.kindFilter === 'texture' ? 'texture' : 'pattern';
 
       if (this.pendingGroupParamRaf) return;
       this.pendingGroupParamRaf = window.requestAnimationFrame(() => {
@@ -4186,6 +4753,10 @@
 
       const hasRepeat = Number.isFinite(params.repeatCount);
       const hasThickness = Number.isFinite(params.thickness);
+	  const kindFilter = params.kindFilter === 'texture' ? 'texture' : 'pattern';
+    const textureRepeat = kindFilter === 'texture' && hasRepeat
+    ? Math.max(1, Math.min(10, Math.round(params.repeatCount)))
+    : null;
 
       let touchedAny = false;
       for (const idx of indices) {
@@ -4197,11 +4768,20 @@
           if (!paint) continue;
           if (paint.kind === 'image') continue;
           if (paint.kind === 'solid') continue;
-          if (!(typeof paint.file === 'string' && paint.file.trim())) continue;
 
-          if (hasRepeat) paint.repeatCount = params.repeatCount;
-          if (hasThickness) paint.thickness = params.thickness;
-          touched = true;
+      if (kindFilter === 'texture') {
+      if (paint.kind !== 'texture') continue;
+      if (!(typeof paint.textureId === 'string' && paint.textureId.trim())) continue;
+	  if (hasRepeat) paint.repeatCount = textureRepeat;
+      touched = true;
+      continue;
+      }
+
+      // Patterns
+      if (!(typeof paint.file === 'string' && paint.file.trim())) continue;
+      if (hasRepeat) paint.repeatCount = params.repeatCount;
+      if (hasThickness) paint.thickness = params.thickness;
+      touched = true;
         }
 
         if (touched && typeof this.canvasLayers.scheduleVisibleColorsCompute === 'function') {
@@ -4480,6 +5060,46 @@
     this.canvasLayers.redrawAllLayers();
   }
 
+  ensureBackgroundLayerExistsAsTexture(textureId, repeatCount, color, paletteCss) {
+    const id = typeof textureId === 'string' ? textureId.trim() : '';
+    if (!id) return;
+    const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+	const rc = Number.isFinite(repeatCount) ? Math.max(1, Math.min(10, Math.round(repeatCount))) : 10;
+    if (!this.canvasLayers || !Array.isArray(this.canvasLayers.layers)) return;
+
+    const palette = Array.isArray(paletteCss) && paletteCss.length
+      ? paletteCss.filter((p) => typeof p === 'string' && p.trim()).slice(0, 4)
+      : [c, c, c, c];
+    while (palette.length < 4) palette.push(palette[palette.length - 1] || c);
+
+    const prevActive = Number.isFinite(this.activeLayerIndex) ? Math.trunc(this.activeLayerIndex) : -1;
+    const prevSelected = this.selectedLayerIndices instanceof Set ? new Set(this.selectedLayerIndices) : new Set();
+
+    this.canvasLayers.layers.unshift({
+      isBackground: true,
+      clipPathN: null,
+      clipKey: null,
+	  paints: [{ kind: 'texture', textureId: id, repeatCount: rc, color: c, tileScaleMode: 'canvas', palette }],
+    });
+
+    if (prevSelected.size) {
+      this.selectedLayerIndices = new Set(
+        Array.from(prevSelected)
+          .map((i) => (Number.isFinite(i) ? Math.trunc(i) + 1 : -1))
+          .filter((i) => i >= 0)
+      );
+    }
+    if (prevActive >= 0) {
+      this.setActiveLayerIndex(prevActive + 1);
+      this.syncActiveShapeToLayerIndex(prevActive + 1);
+    }
+
+    if (typeof this.canvasLayers.cancelAllVisibleColorsSchedules === 'function') {
+      this.canvasLayers.cancelAllVisibleColorsSchedules();
+    }
+    this.canvasLayers.redrawAllLayers();
+  }
+
   applySolidToBackground() {
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     const bgIdx = this.getBackgroundLayerIndex();
@@ -4523,10 +5143,72 @@
     );
   }
 
+  applyTextureToBackground() {
+    const id = typeof this.currentTextureId === 'string' ? this.currentTextureId.trim() : '';
+    if (!id) {
+      this.applySolidToBackground();
+      return;
+    }
+
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const bgIdx = this.getBackgroundLayerIndex();
+    if (bgIdx >= 0) {
+      const layer = layers[bgIdx];
+      if (layer && typeof layer === 'object') layer.isBackground = true;
+      this.canvasLayers.addTexturePaintToLayerIndex(
+        bgIdx,
+        id,
+        this.getTextureRepeatCount(),
+        this.currentColor,
+        'canvas',
+        this.getCurrentTexturePaletteCss()
+      );
+      return;
+    }
+
+    this.ensureBackgroundLayerExistsAsTexture(id, this.getTextureRepeatCount(), this.currentColor, this.getCurrentTexturePaletteCss());
+  }
+
     renderLayersList() {
       if (!(this.layersRoot instanceof HTMLElement)) return;
       const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
 	  this.clearLayerThumbObjectUrls();
+
+    const renderTextureThumbToCanvas = (canvas, img, repeatCount) => {
+      if (!(canvas instanceof HTMLCanvasElement)) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const cssW = Math.max(1, canvas.getBoundingClientRect().width || 22);
+      const cssH = Math.max(1, canvas.getBoundingClientRect().height || 22);
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.round(cssW * dpr));
+      canvas.height = Math.max(1, Math.round(cssH * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      ctx.clearRect(0, 0, cssW, cssH);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.fillRect(0, 0, cssW, cssH);
+
+      if (!img) return;
+      const pattern = ctx.createPattern(img, 'repeat');
+      if (!pattern) return;
+
+      const iw = Math.max(1, img.naturalWidth || img.width || 1);
+      const ih = Math.max(1, img.naturalHeight || img.height || 1);
+
+      const rc = Number.isFinite(repeatCount) ? Math.max(1, Math.min(100, Math.round(repeatCount))) : 10;
+      const repeats = Math.max(2, Math.min(10, Math.round(Math.sqrt(rc))));
+      const tileSize = Math.max(2, cssW / repeats);
+      const sx = Math.max(0.0001, tileSize / iw);
+      const sy = Math.max(0.0001, tileSize / ih);
+
+      ctx.save();
+      ctx.scale(sx, sy);
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, cssW / sx, cssH / sy);
+      ctx.restore();
+    };
 
       this.layersRoot.innerHTML = '';
       const selectedSet = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
@@ -4624,6 +5306,36 @@
           thumb.style.backgroundImage = `url(\"${url}\")`;
           swatches.appendChild(thumb);
         } else {
+      // If the layer contains a texture paint, show a mini-canvas thumb of the texture.
+      const texturePaints = paintsForType.filter((p) => p && p.kind === 'texture' && typeof p.textureId === 'string' && p.textureId.trim());
+      const texturePaint = texturePaints.length ? texturePaints[texturePaints.length - 1] : null;
+      if (texturePaint) {
+      const canvas = document.createElement('canvas');
+      canvas.className = 'layers__thumb';
+      canvas.width = 22;
+      canvas.height = 22;
+      canvas.draggable = false;
+      canvas.setAttribute('aria-label', 'Textuur thumbnail');
+      swatches.appendChild(canvas);
+
+      const textureId = texturePaint.textureId;
+      const color = texturePaint.color;
+      const palette = Array.isArray(texturePaint.palette) ? texturePaint.palette : null;
+      const repeatCount = texturePaint.repeatCount;
+      const token = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      canvas.dataset.thumbToken = token;
+      if (this.canvasLayers && typeof this.canvasLayers.loadGeneratedTextureImage === 'function') {
+        this.canvasLayers.loadGeneratedTextureImage(textureId, color, palette)
+          .then((img) => {
+            if (!canvas.isConnected) return;
+            if (canvas.dataset.thumbToken !== token) return;
+            renderTextureThumbToCanvas(canvas, img, repeatCount);
+          })
+          .catch(() => {
+            renderTextureThumbToCanvas(canvas, null, repeatCount);
+          });
+      }
+      } else {
 
         const colors = [];
         const seen = new Set();
@@ -4672,6 +5384,7 @@
             });
             swatches.appendChild(s);
           }
+		  }
         }
 
         const right = document.createElement('span');
@@ -5986,7 +6699,8 @@
 
       // A new layer item is created only when the drawn shape changes.
       // When the shape stays the same, we append paints into the existing shape-layer.
-      this.applyToActiveShape();
+      if (this.rightView === 'textures' && this.currentTextureId) this.applyTextureToActiveShape();
+      else this.applyToActiveShape();
 
       drawOverlayPath();
 	  evt.preventDefault();
@@ -6100,6 +6814,7 @@
     }
 
     if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
+	if (this.texturePreview instanceof HTMLElement) this.applyTextureSelection(this.currentTextureId);
     this.updateColorBars();
   }
 
@@ -6108,6 +6823,7 @@
 
     // Working color should update preview, but should not move the palette or rebuild bars.
     if (this.preview instanceof HTMLElement) this.applySelection(this.currentFile);
+	if (this.texturePreview instanceof HTMLElement) this.applyTextureSelection(this.currentTextureId);
   }
 
   applyPickedColorToActiveShapes(picked) {
@@ -6168,7 +6884,7 @@
   }
 
   initColorMixCanvasControl() {
-    const canvases = [this.colorMixCanvas, this.colorMixCanvasPatterns, this.colorMixCanvasShapes].filter(
+    const canvases = [this.colorMixCanvas, this.colorMixCanvasPatterns, this.colorMixCanvasTextures, this.colorMixCanvasShapes].filter(
       (c) => c instanceof HTMLCanvasElement
     );
     for (const canvas of canvases) {
@@ -6335,6 +7051,7 @@
     this.colorBarSelectedIndex[k] = idx;
     this.applyColorBarActiveStates();
     this.renderColorMixCanvas();
+	if (this.texturePreview instanceof HTMLElement) this.applyTextureSelection(this.currentTextureId);
   }
 
   applyColorBarActiveStates() {
@@ -6371,6 +7088,7 @@
     // Backwards-compatible wrapper (kept for call sites).
     if (this.colorMixCanvas instanceof HTMLCanvasElement) this.resizeColorMixCanvasEl(this.colorMixCanvas);
     if (this.colorMixCanvasPatterns instanceof HTMLCanvasElement) this.resizeColorMixCanvasEl(this.colorMixCanvasPatterns);
+	if (this.colorMixCanvasTextures instanceof HTMLCanvasElement) this.resizeColorMixCanvasEl(this.colorMixCanvasTextures);
     if (this.colorMixCanvasShapes instanceof HTMLCanvasElement) this.resizeColorMixCanvasEl(this.colorMixCanvasShapes);
   }
 
@@ -6388,7 +7106,7 @@
   }
 
   renderColorMixCanvas() {
-    const canvases = [this.colorMixCanvas, this.colorMixCanvasPatterns, this.colorMixCanvasShapes].filter(
+    const canvases = [this.colorMixCanvas, this.colorMixCanvasPatterns, this.colorMixCanvasTextures, this.colorMixCanvasShapes].filter(
       (c) => c instanceof HTMLCanvasElement
     );
     if (!canvases.length) return;
@@ -6577,6 +7295,173 @@
         this.select.appendChild(opt);
       }
     }
+
+  populateTextureOptions() {
+    if (!(this.textureSelect instanceof HTMLSelectElement)) return;
+    this.textureSelect.innerHTML = '';
+    for (const t of this.textures) {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.label;
+      this.textureSelect.appendChild(opt);
+    }
+  }
+
+  applyTextureSelection(textureId) {
+    if (!(this.texturePreview instanceof HTMLElement)) return;
+    const id = typeof textureId === 'string' ? textureId : '';
+    this.currentTextureId = id;
+
+    // Textures are meant to tile; make the preview reflect that.
+    this.texturePreview.style.backgroundRepeat = 'repeat';
+    this.texturePreview.style.backgroundPosition = 'top left';
+    this.texturePreview.style.backgroundSize = 'auto';
+
+    const token = ++this.texturePreviewToken;
+    if (!id) {
+      this.texturePreview.style.backgroundImage = 'none';
+      this.texturePreview.style.backgroundColor = this.currentColor;
+      this.texturePreview.setAttribute('aria-label', 'Textuur preview: geen');
+      return;
+    }
+
+    this.texturePreview.style.backgroundColor = '';
+    this.texturePreview.setAttribute('aria-label', `Textuur preview: ${id}`);
+    const dataUrl = generateTextureDataUrl(id, this.getCurrentTexturePaletteCss(), 256);
+    if (token !== this.texturePreviewToken) return;
+    this.texturePreview.style.backgroundImage = dataUrl ? `url("${dataUrl}")` : 'none';
+  }
+
+  initTexturesView() {
+    if (!(this.textureSelect instanceof HTMLSelectElement)) return;
+    if (!(this.texturePreview instanceof HTMLElement)) return;
+
+    if (this.textureSelect.dataset.bound === '1') return;
+    this.textureSelect.dataset.bound = '1';
+
+    this.populateTextureOptions();
+
+    const initial = this.textures && this.textures[0] ? this.textures[0].id : '';
+    this.textureSelect.value = initial || '';
+    this.applyTextureSelection(initial || '');
+
+    this.textureSelect.addEventListener('change', () => {
+      this.applyTextureSelection(this.textureSelect.value);
+    });
+
+    this.texturePreview.addEventListener('click', () => {
+      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+      const selected = this.getSelectedLayerIndices();
+
+      // Pending composite shape placement (from saved group)
+      const hasActiveGroup = Array.isArray(this.activeClipPathsN) && this.activeClipPathsN.length > 0;
+      if (hasActiveGroup) {
+        this.applyTextureToActiveShapeGroup();
+        return;
+      }
+
+      const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
+      if (hasActive) {
+        this.applyTextureToActiveShape();
+        return;
+      }
+
+      // If nothing selected: apply to background.
+      if (!this.currentTextureId) {
+        this.applySolidToSelectedLayerOrCanvas();
+        return;
+      }
+
+      // Group-apply to selected layers.
+      if (selected.length > 0) {
+        for (const idx of selected) {
+          this.canvasLayers.addTexturePaintToLayerIndex(
+            idx,
+            this.currentTextureId,
+            this.getTextureRepeatCount(),
+            this.currentColor,
+            this.currentTextureTileScaleMode,
+            this.getCurrentTexturePaletteCss()
+          );
+        }
+        this.renderLayersList();
+        return;
+      }
+
+      if (this.activeLayerIndex >= 0 && this.activeLayerIndex < layers.length) {
+        const layer = layers[this.activeLayerIndex];
+        const paints = layer && Array.isArray(layer.paints) ? layer.paints : [];
+        const isImageLayer = paints.some((p) => p && p.kind === 'image' && p.blob instanceof Blob);
+        if (isImageLayer) {
+          this.applyTextureToBackground();
+          this.renderLayersList();
+          return;
+        }
+        this.canvasLayers.addTexturePaintToLayerIndex(
+          this.activeLayerIndex,
+          this.currentTextureId,
+          this.getTextureRepeatCount(),
+          this.currentColor,
+          this.currentTextureTileScaleMode,
+          this.getCurrentTexturePaletteCss()
+        );
+        this.renderLayersList();
+        return;
+      }
+
+      this.applyTextureToBackground();
+      this.renderLayersList();
+    });
+  }
+
+  initTextureRepeatControl() {
+    if (!(this.textureRepeat instanceof HTMLInputElement)) return;
+    if (!(this.textureRepeatValue instanceof HTMLElement)) return;
+    if (this.textureRepeat.dataset.bound === '1') return;
+    this.textureRepeat.dataset.bound = '1';
+
+    const update = () => {
+      this.textureRepeatValue.textContent = String(this.textureRepeat.value);
+      const nextRepeat = this.getTextureRepeatCount();
+      this.scheduleUpdateSelectedLayersPatternParams({ repeatCount: nextRepeat, kindFilter: 'texture' });
+    };
+    update();
+    this.textureRepeat.addEventListener('input', update);
+  }
+
+  getTextureRepeatCount() {
+    if (!(this.textureRepeat instanceof HTMLInputElement)) return 10;
+    const raw = Number(this.textureRepeat.value);
+    if (!Number.isFinite(raw)) return 10;
+	// Textures: keep tile count intentionally low.
+    return Math.max(1, Math.min(10, Math.round(raw)));
+  }
+
+  initTextureTileScaleToggle() {
+    if (!(this.tileScaleToShapeTextures instanceof HTMLInputElement)) return;
+    if (this.tileScaleToShapeTextures.dataset.bound === '1') return;
+    this.tileScaleToShapeTextures.dataset.bound = '1';
+
+    const update = () => {
+      this.currentTextureTileScaleMode = this.tileScaleToShapeTextures.checked ? 'shape' : 'canvas';
+    };
+    update();
+    this.tileScaleToShapeTextures.addEventListener('change', update);
+  }
+
+  getCurrentTexturePaletteCss() {
+    const getColor = (k) => {
+      const colors = this.colorBarColors && Array.isArray(this.colorBarColors[k]) ? this.colorBarColors[k] : [];
+      const idx = this.colorBarSelectedIndex && Number.isFinite(this.colorBarSelectedIndex[k]) ? this.colorBarSelectedIndex[k] : -1;
+      return idx >= 0 && idx < colors.length ? colors[idx] : null;
+    };
+
+    const c1 = getColor('primary') || this.currentColor || '#000000';
+    const c2 = getColor('complement') || c1;
+    const c3 = getColor('supportA') || c2;
+    const c4 = getColor('supportB') || c2;
+    return [c1, c2, c3, c4];
+  }
 
     applySelection(file) {
       const f = typeof file === 'string' ? file : '';

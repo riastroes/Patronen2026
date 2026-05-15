@@ -36,6 +36,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 						<a href="#" data-right-view="composition">Compositie</a>
 						<a href="#" data-right-view="colors">Kleuren</a>
 						<a href="#" data-right-view="patterns">Patronen</a>
+						<a href="#" data-right-view="textures">Texturen</a>
 						<a href="#" data-right-view="shapes">Vormen</a>
 						<a href="#" data-right-view="images">Afbeeldingen</a>
 						<a href="#" data-right-view="about">Over</a>
@@ -107,6 +108,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 								Tegels schalen op vorm
 							</label>
 						</div>
+						<div id="rightViewTextures" data-right-view="textures" hidden>
+							<label class="field" for="textureSelect">Textuur</label>
+							<select id="textureSelect" class="select"></select>
+							<div class="pattern-preview" id="texturePreview" role="img" aria-label="Textuur preview"></div>
+							<label class="field" for="textureRepeat">Tegels: <span id="textureRepeatValue">10</span></label>
+							<input id="textureRepeat" class="range" type="range" min="1" max="10" step="1" value="10" />
+							<label class="field">Gekozen kleuren</label>
+							<canvas id="colorMixCanvasTextures" class="color-mix" aria-label="Kleurmix"></canvas>
+							<label class="toggle">
+								<input id="tileScaleToShapeTextures" type="checkbox" checked />
+								Tegels schalen op vorm
+							</label>
+						</div>
 						<div id="rightViewColors" data-right-view="colors" hidden>
 							<label class="field">Kleur</label>
 							<div id="palette" class="palette" role="listbox" aria-label="Kleurenpalet"></div>
@@ -132,7 +146,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							</div>
 						</div>
 						<div id="rightViewImages" data-right-view="images" hidden>
-							<label class="field">Opgeslagen afbeeldingen</label>
 							<div class="layers__actions" aria-label="Afbeeldingen acties">
 								<button id="cropToolBtnRight" class="layers__action" type="button">Bijsnijden</button>
 								<button id="saveImageBtnRight" class="layers__action" type="button">Opslaan</button>

@@ -513,14 +513,20 @@ body.right-collapsed #rightPanel {
 
 .layers__actions {
   display: flex;
-	flex-wrap: wrap;
+
+  flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 10px;
 }
 
+#rightViewImages .layers__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .layers__action {
-	flex: 1 1 140px;
-	min-width: 0;
+  flex: 1 1 140px;
+  min-width: 0;
   border: 1px solid var(--border);
   background: white;
   padding: 8px 10px;
@@ -594,6 +600,7 @@ body.right-collapsed #rightPanel {
   height: 22px;
   border-radius: 6px;
   border: 1px solid var(--border);
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.35);
   background-repeat: no-repeat;
   background-position: center;

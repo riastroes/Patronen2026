@@ -3101,6 +3101,95 @@
       return `${yyyy}${mm}${dd}-${hh}${mi}${ss}`;
     }
 
+  isIosLike() {
+    const ua = typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string' ? navigator.userAgent : '';
+    const isIOS = /iPad|iPhone|iPod/i.test(ua);
+    const isIPadOS =
+      typeof navigator !== 'undefined' &&
+      navigator.platform === 'MacIntel' &&
+      Number.isFinite(navigator.maxTouchPoints) &&
+      navigator.maxTouchPoints > 1;
+    return isIOS || isIPadOS;
+  }
+
+  async offerBlobToUser(blob, fileName) {
+    if (!(blob instanceof Blob)) return false;
+    const safeName = typeof fileName === 'string' && fileName.trim() ? fileName.trim() : 'ontwerpstudio-2026.png';
+    const mime = typeof blob.type === 'string' && blob.type ? blob.type : 'image/png';
+
+    // Best on iPad/iOS: Share sheet (Save Image / Save to Files).
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        let file = null;
+        try {
+          file = new File([blob], safeName, { type: mime });
+        } catch (_) {
+          file = null;
+        }
+
+        const canShareFiles =
+          file && (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] }));
+        if (canShareFiles) {
+          await navigator.share({ files: [file], title: safeName });
+          return true;
+        }
+      }
+    } catch (_) {
+      // ignore and fall back
+    }
+
+    const isIOS = this.isIosLike();
+
+    // iOS ignores a.download; open the image so the user can save/share.
+    if (isIOS) {
+      let url = '';
+      try {
+        url = URL.createObjectURL(blob);
+      } catch (_) {
+        url = '';
+      }
+      if (url) {
+        try {
+          const a = document.createElement('a');
+          a.href = url;
+          a.target = '_blank';
+          a.rel = 'noopener';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          return true;
+        } catch (_) {
+          // popups might be blocked
+        }
+        try {
+          window.location.href = url;
+          return true;
+        } catch (_) {
+          // ignore
+        }
+      }
+    }
+
+    // Default: regular download.
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = safeName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {}
+      }, 0);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
     blobToDataUrl(blob) {
       return new Promise((resolve, reject) => {
         if (!(blob instanceof Blob)) {
@@ -3666,23 +3755,16 @@
     downloadSelectedSavedImage() {
       const it = this.getSelectedSavedImageFromCache();
       if (!it) return;
+    if (it && it.blob instanceof Blob) {
+      this.offerBlobToUser(it.blob, it.fileName || 'ontwerpstudio-2026.png').catch(() => false);
+      return;
+    }
 
       this.savedImagesDB
         .get(String(it.id))
         .then((record) => {
           if (!record || !(record.blob instanceof Blob)) return;
-          const url = URL.createObjectURL(record.blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = record.fileName || 'ontwerpstudio-2026.png';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          window.setTimeout(() => {
-            try {
-              URL.revokeObjectURL(url);
-            } catch (_) {}
-          }, 0);
+      this.offerBlobToUser(record.blob, record.fileName || 'ontwerpstudio-2026.png').catch(() => false);
         })
         .catch(() => {});
     }
@@ -4355,18 +4437,7 @@
       if (!(blob instanceof Blob)) return;
       const safeName = typeof name === 'string' && name.trim() ? name.trim() : 'ontwerpstudio-2026.png';
       try {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = safeName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.setTimeout(() => {
-          try {
-            URL.revokeObjectURL(url);
-          } catch (_) {}
-        }, 0);
+      this.offerBlobToUser(blob, safeName).catch(() => false);
       } catch (_) {}
     };
 
